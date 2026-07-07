@@ -36,10 +36,11 @@ app.add_typer(web_app, name="web")
 @app.command()
 def chat(
     hitl: bool = typer.Option(False, "--hitl", help="Require human approval for tool calls and memory writes."),
+    debug: bool = typer.Option(False, "--debug", help="Show graph node names and state transitions while streaming."),
 ) -> None:
     """Start the interactive terminal chat interface."""
 
-    TerminalChat(console=console, hitl=hitl or get_settings().hitl).run()
+    TerminalChat(console=console, hitl=hitl or get_settings().hitl, debug=debug).run()
 
 
 @app.command()

@@ -216,3 +216,10 @@ def test_web_crawl_cli_hitl_rejects(monkeypatch) -> None:
     assert "Crawl rejected" in result.output
     monkeypatch.delenv("EXEC_AGENT_HITL")
     get_settings.cache_clear()
+
+
+def test_chat_command_accepts_debug_flag() -> None:
+    result = runner.invoke(app, ["chat", "--debug"])
+
+    assert result.exit_code == 0
+    assert "Debug graph progress enabled" in result.output

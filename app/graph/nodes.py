@@ -18,6 +18,21 @@ logger = logging.getLogger(__name__)
 TextStreamer = Callable[[str], Iterable[str]]
 
 
+def _emit_progress(state: AssistantState, stage: str, message: str, *, node: str | None = None) -> None:
+    """Emit terminal progress events without coupling graph nodes to Rich."""
+
+    callback = state.get("progress_callback")
+    if callback is None:
+        return
+    event: dict[str, Any] = {"stage": stage, "message": message}
+    if node is not None:
+        event["node"] = node
+    try:
+        callback(event)
+    except Exception as exc:  # pragma: no cover - progress UI must never break graph execution
+        logger.debug("Progress callback failed: %s", exc)
+
+
 def _messages_from_state(state: AssistantState) -> list[AssistantMessage]:
     """Return a copy of the short-term-memory messages in graph state."""
 
@@ -63,6 +78,7 @@ def classify_intent(state: AssistantState) -> AssistantState:
     """Classify user intent before routing to the matching tool node."""
 
     logger.info("Running graph node: classify_intent")
+    _emit_progress(state, "node", "Classifying intent", node="classify_intent")
     user_input = state.get("user_input", "")
     lowered = user_input.lower()
     intent: IntentName = "general_chat"
@@ -109,12 +125,14 @@ def _tool_response_prompt(state: AssistantState, tool_label: str, extra_context:
 
 def general_chat_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: general_chat_tool")
+    _emit_progress(state, "tool", "Using tool: general chat", node="general_chat_tool")
     updates = _record_tool_call(state, "general_chat.respond", "general_chat")
     return updates
 
 
 def document_question_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: document_question_tool")
+    _emit_progress(state, "tool", "Using tool: document vector search", node="document_question_tool")
     updates = _record_tool_call(
         state, "documents.vector_search", "document_question", {"k": state.get("vector_search_k", 5)}
     )
@@ -136,6 +154,7 @@ def document_question_tool(state: AssistantState) -> AssistantState:
 
 def web_research_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: web_research_tool")
+    _emit_progress(state, "tool", "Using tool: web research", node="web_research_tool")
     updates = _record_tool_call(
         state,
         "fastcrw.web_research",
@@ -159,6 +178,7 @@ def web_research_tool(state: AssistantState) -> AssistantState:
 
 def image_question_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: image_question_tool")
+    _emit_progress(state, "tool", "Using tool: image analysis", node="image_question_tool")
     updates = _record_tool_call(state, "image.analyze", "image_question")
     updates["prompt"] = _tool_response_prompt(
         state,
@@ -170,6 +190,7 @@ def image_question_tool(state: AssistantState) -> AssistantState:
 
 def memory_update_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: memory_update_tool")
+    _emit_progress(state, "tool", "Using tool: memory update", node="memory_update_tool")
     updates = _record_tool_call(state, "memory.update", "memory_update")
     updates["prompt"] = _tool_response_prompt(
         state,
@@ -181,6 +202,7 @@ def memory_update_tool(state: AssistantState) -> AssistantState:
 
 def task_planning_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: task_planning_tool")
+    _emit_progress(state, "tool", "Using tool: task planner", node="task_planning_tool")
     updates = _record_tool_call(state, "planner.create_plan", "task_planning")
     updates["prompt"] = _tool_response_prompt(
         state, "task_planning", "Create an actionable plan with clear next steps and assumptions."
@@ -190,6 +212,7 @@ def task_planning_tool(state: AssistantState) -> AssistantState:
 
 def fallback_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: fallback_tool")
+    _emit_progress(state, "tool", "Using tool: fallback chat", node="fallback_tool")
     updates = _record_tool_call(
         state, "fallback.general_chat", "uncertain", {"reason": state.get("intent_reason", "uncertain")}
     )
@@ -229,6 +252,7 @@ def load_context(state: AssistantState) -> AssistantState:
     """Load short-term memory and prepare the prompt for the LLM call."""
 
     logger.info("Running graph node: load_context")
+    _emit_progress(state, "memory", "Loading memory", node="load_context")
     messages = _messages_from_state(state)
     user_input = state.get("user_input", "")
     if user_input:
@@ -256,6 +280,7 @@ def load_context(state: AssistantState) -> AssistantState:
 def _search_vector_context(state: AssistantState, query: str):
     """Retrieve relevant vector context without blocking graph execution when the store is unavailable."""
 
+    _emit_progress(state, "vector", "Searching vector DB")
     try:
         store = VectorStore(state.get("vector_store_path"))
         return store.similarity_search(query, k=int(state.get("vector_search_k", 5)))
@@ -328,6 +353,7 @@ def human_approval(state: AssistantState) -> AssistantState:
     if not state.get("hitl_enabled", False) or pending_action is None:
         return {"last_approval": {"status": "approved", "payload": {}}}
 
+    _emit_progress(state, "approval", "Waiting for approval", node="human_approval")
     decision = state.get("approval_handler", _default_approval_handler)(pending_action)
     status = decision.get("status", "rejected")
     payload = decision.get("payload", pending_action.get("payload", {}))
@@ -347,6 +373,7 @@ def call_llm(state: AssistantState) -> AssistantState:
     """Call the local LLM and keep streamed chunks in graph state."""
 
     logger.info("Running graph node: call_llm")
+    _emit_progress(state, "generation", "Generating answer", node="call_llm")
     prompt = state.get("prompt", "")
     response_chunks = list(_get_streamer(state)(prompt))
     response = "".join(response_chunks)
@@ -366,6 +393,7 @@ def save_context(state: AssistantState) -> AssistantState:
     """Save the assistant response back into short-term memory."""
 
     logger.info("Running graph node: save_context")
+    _emit_progress(state, "memory", "Saving response to memory", node="save_context")
     messages = _messages_from_state(state)
     response = state.get("response", "")
     if response:

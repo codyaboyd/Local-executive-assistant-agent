@@ -61,3 +61,20 @@ def test_terminal_chat_uses_graph_and_preserves_memory() -> None:
         ("user", "hi"),
         ("assistant", "hello!"),
     ]
+
+
+def test_terminal_chat_emits_progress_and_debug_transitions() -> None:
+    from io import StringIO
+    from rich.console import Console
+
+    from exec_agent.chat import TerminalChat
+
+    output = StringIO()
+    chat = TerminalChat(console=Console(file=output, force_terminal=False), streamer=lambda prompt: ["ok"], debug=True)
+    chat._handle_user_message("hi")
+
+    rendered = output.getvalue()
+    assert "Graph transition" in rendered
+    assert "load_context" in rendered
+    assert "call_llm" in rendered
+    assert "ok" in rendered

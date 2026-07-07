@@ -71,3 +71,5 @@ class AssistantState(TypedDict, total=False):
     intent_reason: str
     tool_name: str
     tool_call_log: list[dict[str, Any]]
+    debug: bool
+    progress_callback: Callable[[dict[str, Any]], None]

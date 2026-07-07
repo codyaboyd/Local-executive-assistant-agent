@@ -39,7 +39,12 @@ def _messages_from_state(state: AssistantState) -> list[AssistantMessage]:
     return list(state.get("messages", []))
 
 
-def _render_prompt(messages: list[AssistantMessage], long_term_context: str = "", vector_context: str = "") -> str:
+def _render_prompt(
+    messages: list[AssistantMessage],
+    long_term_context: str = "",
+    vector_context: str = "",
+    conversation_summary: str = "",
+) -> str:
     """Render graph memory and RAG context as the prompt expected by the local LLM."""
 
     transcript: list[str] = []
@@ -53,6 +58,12 @@ def _render_prompt(messages: list[AssistantMessage], long_term_context: str = ""
         transcript.extend([
             "Relevant long-term memories:",
             long_term_context,
+            "",
+        ])
+    if conversation_summary:
+        transcript.extend([
+            "Conversation summary for continuity:",
+            conversation_summary,
             "",
         ])
     transcript.extend(f"{message['role'].title()}: {message['content']}" for message in messages)
@@ -261,7 +272,7 @@ def load_context(state: AssistantState) -> AssistantState:
     vector_results = _search_vector_context(state, user_input) if user_input else []
     long_term_context = format_memories_for_prompt(memories)
     vector_context = format_vector_results_for_prompt(vector_results)
-    prompt = _render_prompt(messages, long_term_context, vector_context)
+    prompt = _render_prompt(messages, long_term_context, vector_context, state.get("conversation_summary", ""))
     return {
         "messages": messages,
         "prompt": prompt,
@@ -390,7 +401,7 @@ def call_llm(state: AssistantState) -> AssistantState:
 
 
 def save_context(state: AssistantState) -> AssistantState:
-    """Save the assistant response back into short-term memory."""
+    """Save the assistant response back into short-term memory and refresh its summary."""
 
     logger.info("Running graph node: save_context")
     _emit_progress(state, "memory", "Saving response to memory", node="save_context")
@@ -398,7 +409,8 @@ def save_context(state: AssistantState) -> AssistantState:
     response = state.get("response", "")
     if response:
         messages.append({"role": "assistant", "content": response})
-    return {"messages": messages}
+    summary = _summarize_messages(messages)
+    return {"messages": messages, "conversation_summary": summary}
 
 
 def route_after_approval(state: AssistantState) -> str:
@@ -420,3 +432,11 @@ def route_by_intent(state: AssistantState) -> str:
     if intent == "uncertain" or confidence < 0.5:
         return "fallback"
     return str(intent)
+
+
+def _summarize_messages(messages: list[AssistantMessage], *, max_chars: int = 1200) -> str:
+    lines = [f"{message['role'].title()}: {message['content']}" for message in messages]
+    summary = "\n".join(lines).strip()
+    if len(summary) <= max_chars:
+        return summary
+    return "…" + summary[-max_chars:]

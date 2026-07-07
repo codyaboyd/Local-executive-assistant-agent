@@ -51,6 +51,7 @@ class AssistantState(TypedDict, total=False):
     messages: list[AssistantMessage]
     user_input: str
     prompt: str
+    conversation_summary: str
     response: str
     response_chunks: list[str]
     long_term_memories: list[dict[str, Any]]

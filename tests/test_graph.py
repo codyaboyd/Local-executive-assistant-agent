@@ -120,3 +120,16 @@ def test_graph_includes_relevant_vector_context(monkeypatch) -> None:
     assert "Relevant vector context" in loaded["prompt"]
     assert "Travel policy requires receipts" in loaded["prompt"]
     assert loaded["vector_context"][0]["metadata"] == {"source": "handbook.md"}
+
+
+def test_web_context_requires_fastcrw_enabled(monkeypatch) -> None:
+    from app.graph.nodes import _maybe_search_web_context
+
+    calls = []
+    monkeypatch.setattr("app.graph.nodes.web_fastcrw.search_web", lambda query, max_results=5: calls.append(query) or [])
+
+    assert _maybe_search_web_context(
+        {"web_access_enabled": True, "fastcrw_enabled": False, "active_profile_allows_online_research": True},
+        "latest news",
+    ) == []
+    assert calls == []

@@ -60,7 +60,11 @@ def config() -> None:
     table.add_row("device", settings.device)
     table.add_row("max_tokens", str(settings.max_tokens))
     table.add_row("temperature", str(settings.temperature))
+    table.add_row("runtime_profile", settings.runtime_profile)
     table.add_row("hitl", str(settings.hitl))
+    table.add_row("web_enabled", str(settings.web_enabled))
+    table.add_row("fastcrw_enabled", str(settings.fastcrw_enabled))
+    table.add_row("fastcrw_crawl_requires_approval", str(settings.fastcrw_crawl_requires_approval))
     table.add_row("fastcrw_base_url", settings.fastcrw_base_url)
     table.add_row("fastcrw_api_key", "set" if settings.fastcrw_api_key else "not set")
     table.add_row("fastcrw_timeout_seconds", str(settings.fastcrw_timeout_seconds))
@@ -271,7 +275,7 @@ def web_crawl(url: str, limit: int = typer.Option(10, "--limit", min=1, help="Ma
     """Crawl a URL with self-hosted FastCRW and store page content in vector DB."""
 
     settings = get_settings()
-    if settings.hitl:
+    if settings.hitl or settings.fastcrw_crawl_requires_approval:
         domain = web_fastcrw.target_domain(url)
         edited_limit = typer.prompt("Max page limit", default=str(limit))
         limit = int(edited_limit)

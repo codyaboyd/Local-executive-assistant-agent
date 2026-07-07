@@ -119,7 +119,7 @@ def _explicitly_requests_web_research(query: str) -> bool:
 def _maybe_search_web_context(state: AssistantState, query: str):
     """Use FastCRW only when web access is enabled and web research is allowed/requested."""
 
-    if not state.get("web_access_enabled", False):
+    if not state.get("web_access_enabled", False) or not state.get("fastcrw_enabled", state.get("web_access_enabled", False)):
         return []
     if not (_explicitly_requests_web_research(query) or state.get("active_profile_allows_online_research", False)):
         return []

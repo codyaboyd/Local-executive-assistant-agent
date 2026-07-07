@@ -85,7 +85,16 @@ def test_ingest_pdf_cli(monkeypatch) -> None:
     assert "Ingested 3 PDF chunks from ./file.pdf" in result.output
 
 
-def test_ask_cli_uses_pdf_context_and_prints_references(monkeypatch) -> None:
+def test_ingest_docx_cli(monkeypatch) -> None:
+    monkeypatch.setattr("exec_agent.cli.ingest_docx_file", lambda path: 4)
+
+    result = runner.invoke(app, ["ingest", "docx", "./file.docx"])
+
+    assert result.exit_code == 0
+    assert "Ingested 4 DOCX chunks from ./file.docx" in result.output
+
+
+def test_ask_cli_uses_pdf_and_docx_context_and_prints_references(monkeypatch) -> None:
     from app.memory.vector_store import VectorSearchResult
 
     captured = {}
@@ -101,7 +110,13 @@ def test_ask_cli_uses_pdf_context_and_prints_references(monkeypatch) -> None:
                     "doc-1",
                     0.1,
                 ),
-                VectorSearchResult("Ignore non-pdf", {"source": "notes.md", "file_type": "md"}, "doc-2", 0.2),
+                VectorSearchResult(
+                    "DOCX policy names approvals.",
+                    {"source": "handbook.docx", "section_heading": "Approvals", "file_type": "docx"},
+                    "doc-2",
+                    0.2,
+                ),
+                VectorSearchResult("Ignore non-document", {"source": "notes.md", "file_type": "md"}, "doc-3", 0.3),
             ]
 
     def fake_generate_text(prompt: str) -> str:
@@ -115,5 +130,6 @@ def test_ask_cli_uses_pdf_context_and_prints_references(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "Receipts are required" in result.output
-    assert "References: handbook.pdf p. 7" in result.output
-    assert "Source: handbook.pdf, page 7" in captured["prompt"]
+    assert "References: handbook.pdf p. 7, handbook.docx section: Approvals" in result.output
+    assert "Source: handbook.pdf, type pdf, page 7" in captured["prompt"]
+    assert "Source: handbook.docx, type docx, section Approvals" in captured["prompt"]

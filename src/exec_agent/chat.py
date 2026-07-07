@@ -14,7 +14,7 @@ from rich.prompt import Prompt
 
 from exec_agent.config import get_settings
 from app.graph.builder import build_graph
-from app.graph.state import AssistantState
+from app.graph.state import ApprovalDecision, AssistantState, ProposedAction
 from exec_agent.models.llm import generate_text, stream_text
 
 
@@ -107,12 +107,14 @@ class TerminalChat:
         session: ChatSession | None = None,
         streamer: TextStreamer = default_streamer,
         input_reader: Callable[[str], str] | None = None,
+        hitl: bool | None = None,
     ) -> None:
         self.console = console or Console()
         self.session = session or ChatSession()
         self.streamer = streamer
         self.graph = build_graph()
         self.input_reader = input_reader or (lambda prompt: Prompt.ask(prompt, console=self.console))
+        self.hitl = get_settings().hitl if hitl is None else hitl
 
     def run(self) -> None:
         """Run the interactive terminal chat until the user exits or input closes."""
@@ -121,7 +123,8 @@ class TerminalChat:
         self.console.print(
             Panel.fit(
                 "[bold green]Executive assistant chat[/bold green]\n"
-                "Type [cyan]/help[/cyan] for commands or [cyan]/exit[/cyan] to quit.",
+                "Type [cyan]/help[/cyan] for commands or [cyan]/exit[/cyan] to quit."
+                + ("\n[bold yellow]Human-in-the-loop approvals enabled.[/bold yellow]" if self.hitl else ""),
                 title=settings.app_name,
                 border_style="green",
             )
@@ -167,6 +170,8 @@ class TerminalChat:
             ],
             "user_input": user_text,
             "streamer": streaming_printer,
+            "hitl_enabled": self.hitl,
+            "approval_handler": self._request_human_approval,
         }
 
         self.console.print("[bold magenta]Assistant[/bold magenta]: ", end="")
@@ -178,6 +183,40 @@ class TerminalChat:
             for message in result.get("messages", [])
         ]
 
+
+    def _request_human_approval(self, action: ProposedAction) -> ApprovalDecision:
+        """Prompt the user to approve, reject, or edit a proposed side effect."""
+
+        payload = action.get("payload", {})
+        preview = str(payload)
+        if len(preview) > 800:
+            preview = f"{preview[:800]}..."
+        self.console.print(
+            Panel(
+                f"[bold]Proposed action:[/bold] {action.get('name', 'unknown')}\n"
+                f"[bold]Reason:[/bold] {action.get('reason', '')}\n"
+                f"[bold]Payload preview:[/bold] {preview}",
+                title="Human approval required",
+                border_style="yellow",
+            )
+        )
+        choice = self.input_reader("Approve, reject, or edit? [a/r/e]").strip().lower()
+        if choice in {"a", "approve", "approved", ""}:
+            return {"status": "approved", "payload": payload}
+        if choice in {"e", "edit", "edited"}:
+            return self._edit_approval_payload(action)
+        return {"status": "rejected", "payload": payload}
+
+    def _edit_approval_payload(self, action: ProposedAction) -> ApprovalDecision:
+        """Collect a small safe edit for the supported HITL action payloads."""
+
+        payload = dict(action.get("payload", {}))
+        if action.get("name") == "local_llm.generate":
+            payload["prompt"] = self.input_reader("Edited prompt")
+        elif action.get("name") == "short_term_memory.write":
+            payload["response"] = self.input_reader("Edited assistant response")
+        return {"status": "edited", "payload": payload}
+
     def _print_help(self) -> None:
         self.console.print(
             Panel(
@@ -188,6 +227,7 @@ class TerminalChat:
 - `/help` - Show this help message.
 - `/clear` - Clear the in-memory session transcript.
 - `/exit` or `/quit` - Exit the chat.
+- `--hitl` - Start chat with approvals for tool calls and memory writes.
                     """.strip()
                 ),
                 title="Chat help",

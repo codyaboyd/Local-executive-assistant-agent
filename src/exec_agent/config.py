@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     device: Literal["cpu", "cuda", "auto"] = Field(default="auto", validation_alias="EXEC_AGENT_DEVICE")
     max_tokens: int = Field(default=64, ge=1, validation_alias="EXEC_AGENT_MAX_TOKENS")
     temperature: float = Field(default=0.7, ge=0.0, validation_alias="EXEC_AGENT_TEMPERATURE")
+    hitl: bool = Field(default=False, validation_alias="EXEC_AGENT_HITL")
 
     model_config = SettingsConfigDict(
         env_file=".env",

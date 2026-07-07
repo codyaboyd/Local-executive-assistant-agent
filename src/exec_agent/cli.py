@@ -17,10 +17,12 @@ console = Console()
 
 
 @app.command()
-def chat() -> None:
+def chat(
+    hitl: bool = typer.Option(False, "--hitl", help="Require human approval for tool calls and memory writes."),
+) -> None:
     """Start the interactive terminal chat interface."""
 
-    TerminalChat(console=console).run()
+    TerminalChat(console=console, hitl=hitl or get_settings().hitl).run()
 
 
 @app.command()
@@ -39,6 +41,7 @@ def config() -> None:
     table.add_row("device", settings.device)
     table.add_row("max_tokens", str(settings.max_tokens))
     table.add_row("temperature", str(settings.temperature))
+    table.add_row("hitl", str(settings.hitl))
     console.print(table)
 
 

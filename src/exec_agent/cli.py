@@ -6,6 +6,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from exec_agent.config import get_settings
+from exec_agent.models.llm import generate_text
 
 app = typer.Typer(
     name="exec-agent",
@@ -42,4 +43,15 @@ def config() -> None:
     table.add_row("environment", settings.environment)
     table.add_row("log_level", settings.log_level)
     table.add_row("data_dir", str(settings.expanded_data_dir))
+    table.add_row("model_id", settings.model_id)
+    table.add_row("device", settings.device)
+    table.add_row("max_tokens", str(settings.max_tokens))
+    table.add_row("temperature", str(settings.temperature))
     console.print(table)
+
+
+@app.command("model-test")
+def model_test(prompt: str) -> None:
+    """Generate a sample response with the configured local model."""
+
+    console.print(generate_text(prompt))

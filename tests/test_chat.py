@@ -38,3 +38,26 @@ def test_session_render_prompt_includes_transcript_and_assistant_cue() -> None:
     session.add("assistant", "hi")
 
     assert session.render_prompt() == "User: hello\nAssistant: hi\nAssistant:"
+
+
+def test_terminal_chat_uses_graph_and_preserves_memory() -> None:
+    from io import StringIO
+    from rich.console import Console
+
+    from exec_agent.chat import TerminalChat
+
+    prompts: list[str] = []
+
+    def fake_streamer(prompt: str):
+        prompts.append(prompt)
+        yield "hello"
+        yield "!"
+
+    chat = TerminalChat(console=Console(file=StringIO()), streamer=fake_streamer)
+    chat._handle_user_message("hi")
+
+    assert prompts == ["User: hi\nAssistant:"]
+    assert [(message.role, message.content) for message in chat.session.messages] == [
+        ("user", "hi"),
+        ("assistant", "hello!"),
+    ]

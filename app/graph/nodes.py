@@ -8,7 +8,7 @@ from typing import Any
 
 from exec_agent.models.llm import generate_text, stream_text
 
-from app.graph.state import ApprovalDecision, AssistantMessage, AssistantState, ProposedAction
+from app.graph.state import ApprovalDecision, AssistantMessage, AssistantState, IntentName, ProposedAction
 from app.memory.long_term import LongTermMemoryStore, format_memories_for_prompt
 from app.memory.vector_store import VectorStore, format_vector_results_for_prompt
 from app.tools import web_fastcrw
@@ -45,6 +45,162 @@ def _render_prompt(messages: list[AssistantMessage], long_term_context: str = ""
     return "\n".join(transcript)
 
 
+def _record_tool_call(
+    state: AssistantState,
+    tool_name: str,
+    intent: str,
+    details: dict[str, Any] | None = None,
+) -> AssistantState:
+    """Record and print tool calls so they remain observable in terminal output."""
+
+    entry = {"tool": tool_name, "intent": intent, "details": details or {}}
+    logger.info("TOOL CALL: %s intent=%s details=%s", tool_name, intent, entry["details"])
+    print(f"TOOL CALL: {tool_name} intent={intent} details={entry['details']}")
+    return {"tool_name": tool_name, "tool_call_log": [*state.get("tool_call_log", []), entry]}
+
+
+def classify_intent(state: AssistantState) -> AssistantState:
+    """Classify user intent before routing to the matching tool node."""
+
+    logger.info("Running graph node: classify_intent")
+    user_input = state.get("user_input", "")
+    lowered = user_input.lower()
+    intent: IntentName = "general_chat"
+    confidence = 0.75
+    reason = "Defaulted to general conversation."
+
+    if not lowered.strip():
+        intent, confidence, reason = "uncertain", 0.0, "No user input was provided."
+    elif any(
+        term in lowered for term in ("remember", "save this", "store this", "update memory", "forget")
+    ):
+        intent, confidence, reason = "memory_update", 0.86, "User asked to add, update, or remove memory."
+    elif any(
+        term in lowered for term in ("plan", "schedule", "itinerary", "todo", "task list", "next steps")
+    ):
+        intent, confidence, reason = "task_planning", 0.84, "User asked for planning or task decomposition."
+    elif any(
+        term in lowered for term in ("image", "photo", "picture", "screenshot", "diagram", "chart")
+    ):
+        intent, confidence, reason = "image_question", 0.84, "User referred to visual content."
+    elif _explicitly_requests_web_research(user_input):
+        intent, confidence, reason = "web_research", 0.88, "User explicitly requested current or web-backed research."
+    elif any(
+        term in lowered for term in ("document", "pdf", "docx", "file", "handbook", "policy", "uploaded")
+    ):
+        intent, confidence, reason = "document_question", 0.82, "User asked about local document context."
+    elif (
+        any(term in lowered for term in ("maybe", "not sure", "could be", "unclear"))
+        and len(lowered.split()) < 6
+    ):
+        intent, confidence, reason = "uncertain", 0.35, "Input is too ambiguous to choose a specialized tool."
+
+    return {"intent": intent, "intent_confidence": confidence, "intent_reason": reason}
+
+
+def _tool_response_prompt(state: AssistantState, tool_label: str, extra_context: str = "") -> str:
+    messages = _messages_from_state(state)
+    sections = [f"Tool route: {tool_label}"]
+    if extra_context:
+        sections.extend(["Tool context:", extra_context])
+    sections.extend([state.get("prompt", _render_prompt(messages))])
+    return "\n".join(sections)
+
+
+def general_chat_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: general_chat_tool")
+    updates = _record_tool_call(state, "general_chat.respond", "general_chat")
+    return updates
+
+
+def document_question_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: document_question_tool")
+    updates = _record_tool_call(
+        state, "documents.vector_search", "document_question", {"k": state.get("vector_search_k", 5)}
+    )
+    user_input = state.get("user_input", "")
+    vector_results = _search_vector_context(state, user_input) if user_input else []
+    if vector_results:
+        updates["vector_context"] = [result.__dict__ for result in vector_results]
+        updates["prompt"] = _tool_response_prompt(
+            state, "document_question", format_vector_results_for_prompt(vector_results)
+        )
+    else:
+        updates["prompt"] = _tool_response_prompt(
+            state,
+            "document_question",
+            "No matching document context was found; answer with that limitation.",
+        )
+    return updates
+
+
+def web_research_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: web_research_tool")
+    updates = _record_tool_call(
+        state,
+        "fastcrw.web_research",
+        "web_research",
+        {"enabled": state.get("web_access_enabled", False)},
+    )
+    web_results = _maybe_search_web_context(state, state.get("user_input", ""))
+    if web_results:
+        updates["vector_context"] = [*state.get("vector_context", []), *[result.__dict__ for result in web_results]]
+        updates["prompt"] = _tool_response_prompt(
+            state, "web_research", format_vector_results_for_prompt(web_results)
+        )
+    else:
+        updates["prompt"] = _tool_response_prompt(
+            state,
+            "web_research",
+            "Web research returned no context or is disabled; state this limitation if relevant.",
+        )
+    return updates
+
+
+def image_question_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: image_question_tool")
+    updates = _record_tool_call(state, "image.analyze", "image_question")
+    updates["prompt"] = _tool_response_prompt(
+        state,
+        "image_question",
+        "Use available image-analysis context if it has been supplied; otherwise ask for the image.",
+    )
+    return updates
+
+
+def memory_update_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: memory_update_tool")
+    updates = _record_tool_call(state, "memory.update", "memory_update")
+    updates["prompt"] = _tool_response_prompt(
+        state,
+        "memory_update",
+        "Identify the requested memory update and confirm what should be stored or changed.",
+    )
+    return updates
+
+
+def task_planning_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: task_planning_tool")
+    updates = _record_tool_call(state, "planner.create_plan", "task_planning")
+    updates["prompt"] = _tool_response_prompt(
+        state, "task_planning", "Create an actionable plan with clear next steps and assumptions."
+    )
+    return updates
+
+
+def fallback_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: fallback_tool")
+    updates = _record_tool_call(
+        state, "fallback.general_chat", "uncertain", {"reason": state.get("intent_reason", "uncertain")}
+    )
+    updates["intent"] = "general_chat"
+    updates["prompt"] = _tool_response_prompt(
+        state,
+        "fallback",
+        "Intent was uncertain; answer generally and ask a clarifying question if needed.",
+    )
+    return updates
+
 def _get_streamer(state: AssistantState) -> TextStreamer:
     streamer = state.get("streamer")
     if streamer is not None:
@@ -79,8 +235,6 @@ def load_context(state: AssistantState) -> AssistantState:
         messages.append({"role": "user", "content": user_input})
     memories = LongTermMemoryStore(state.get("memory_db_path")).search(user_input) if user_input else []
     vector_results = _search_vector_context(state, user_input) if user_input else []
-    web_results = _maybe_search_web_context(state, user_input) if user_input else []
-    vector_results = [*web_results, *vector_results]
     long_term_context = format_memories_for_prompt(memories)
     vector_context = format_vector_results_for_prompt(vector_results)
     prompt = _render_prompt(messages, long_term_context, vector_context)
@@ -112,14 +266,25 @@ def _search_vector_context(state: AssistantState, query: str):
 
 def _explicitly_requests_web_research(query: str) -> bool:
     lowered = query.lower()
-    phrases = ("web research", "search the web", "look up", "online research", "browse", "internet", "latest", "current")
+    phrases = (
+        "web research",
+        "search the web",
+        "look up",
+        "online research",
+        "browse",
+        "internet",
+        "latest",
+        "current",
+    )
     return any(phrase in lowered for phrase in phrases)
 
 
 def _maybe_search_web_context(state: AssistantState, query: str):
     """Use FastCRW only when web access is enabled and web research is allowed/requested."""
 
-    if not state.get("web_access_enabled", False) or not state.get("fastcrw_enabled", state.get("web_access_enabled", False)):
+    if not state.get("web_access_enabled", False) or not state.get(
+        "fastcrw_enabled", state.get("web_access_enabled", False)
+    ):
         return []
     if not (_explicitly_requests_web_research(query) or state.get("active_profile_allows_online_research", False)):
         return []
@@ -143,12 +308,17 @@ def _maybe_search_web_context(state: AssistantState, query: str):
                 url = decision.get("payload", {}).get("url", url)
             pages.append(web_fastcrw.scrape_url(str(url)))
         return [
-            type("WebVectorResult", (), {"content": page.content, "metadata": page.metadata, "id": page.url, "distance": None})()
+            type(
+                "WebVectorResult",
+                (),
+                {"content": page.content, "metadata": page.metadata, "id": page.url, "distance": None},
+            )()
             for page in pages
         ]
     except web_fastcrw.FastCRWError as exc:
         logger.warning("FastCRW web context skipped: %s", exc)
         return []
+
 
 def human_approval(state: AssistantState) -> AssistantState:
     """Pause for human approval before side-effecting tool calls or memory writes."""
@@ -212,3 +382,13 @@ def route_after_approval(state: AssistantState) -> str:
     if pending_action.get("name") == "short_term_memory.write":
         return "save_context"
     return "call_llm"
+
+
+def route_by_intent(state: AssistantState) -> str:
+    """Return the graph edge name for the classified intent, with safe fallback."""
+
+    intent = state.get("intent", "uncertain")
+    confidence = float(state.get("intent_confidence", 0.0))
+    if intent == "uncertain" or confidence < 0.5:
+        return "fallback"
+    return str(intent)

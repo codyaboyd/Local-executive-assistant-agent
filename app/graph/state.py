@@ -13,6 +13,17 @@ class AssistantMessage(TypedDict):
     content: str
 
 
+IntentName = Literal[
+    "general_chat",
+    "document_question",
+    "web_research",
+    "image_question",
+    "memory_update",
+    "task_planning",
+    "uncertain",
+]
+
+
 class ProposedAction(TypedDict, total=False):
     """A side-effecting action that may require human approval."""
 
@@ -55,3 +66,8 @@ class AssistantState(TypedDict, total=False):
     web_access_enabled: bool
     fastcrw_enabled: bool
     active_profile_allows_online_research: bool
+    intent: IntentName
+    intent_confidence: float
+    intent_reason: str
+    tool_name: str
+    tool_call_log: list[dict[str, Any]]

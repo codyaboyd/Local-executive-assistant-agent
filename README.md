@@ -141,7 +141,34 @@ Add your preferred license for this project.
 
 This project can use a self-hosted FastCRW server for web research. The default
 configuration targets a local server and does **not** use hosted FastCRW by
-default.
+default. The assistant app does not require FastCRW to be running at startup; if
+FastCRW is offline, only web commands/features fail gracefully with a clear
+FastCRW connection error.
+
+### Docker Compose setup
+
+The repository includes `docker-compose.fastcrw.yml` for running the official
+self-hostable FastCRW image (`ghcr.io/us/crw:latest`) on localhost. The container
+listens internally on port 3000 and is published to `127.0.0.1:${FASTCRW_PORT}`
+(default `3002`).
+
+```bash
+cp .env.example .env
+make fastcrw-up
+exec-agent web health
+```
+
+Useful Make targets:
+
+```bash
+make fastcrw-up      # start FastCRW in the background
+make fastcrw-down    # stop and remove the FastCRW container
+make fastcrw-logs    # follow FastCRW logs
+make fastcrw-health  # call http://127.0.0.1:${FASTCRW_PORT}/health
+```
+
+Set `FASTCRW_PORT=3002` in `.env` or when invoking `make` to choose the local
+port. `FASTCRW_API_KEY` is optional for self-hosted FastCRW and may be left blank.
 
 ### Configuration
 
@@ -155,7 +182,9 @@ Set these environment variables as needed:
 
 ```bash
 EXEC_AGENT_RUNTIME_PROFILE=private-offline
+FASTCRW_PORT=3002
 FASTCRW_BASE_URL=http://localhost:3002
+FASTCRW_API_PREFIX=/v1
 FASTCRW_API_KEY=              # optional for your self-hosted server
 FASTCRW_TIMEOUT_SECONDS=30
 FASTCRW_MAX_RESULTS=5

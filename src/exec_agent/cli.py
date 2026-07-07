@@ -66,6 +66,7 @@ def config() -> None:
     table.add_row("fastcrw_enabled", str(settings.fastcrw_enabled))
     table.add_row("fastcrw_crawl_requires_approval", str(settings.fastcrw_crawl_requires_approval))
     table.add_row("fastcrw_base_url", settings.fastcrw_base_url)
+    table.add_row("fastcrw_api_prefix", settings.fastcrw_api_prefix)
     table.add_row("fastcrw_api_key", "set" if settings.fastcrw_api_key else "not set")
     table.add_row("fastcrw_timeout_seconds", str(settings.fastcrw_timeout_seconds))
     table.add_row("fastcrw_max_results", str(settings.fastcrw_max_results))

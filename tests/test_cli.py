@@ -170,3 +170,49 @@ def test_image_ask_cli(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Answer: a chart" in result.output
     assert "Stored image answer" in result.output
+
+
+def test_web_health_cli(monkeypatch) -> None:
+    monkeypatch.setattr("exec_agent.cli.web_fastcrw.health_check", lambda: {"status": "ok"})
+
+    result = runner.invoke(app, ["web", "health"])
+
+    assert result.exit_code == 0
+    assert "status" in result.output
+    assert "ok" in result.output
+
+
+def test_web_search_cli(monkeypatch) -> None:
+    monkeypatch.setattr("exec_agent.cli.web_fastcrw.search_web", lambda query, max_results=5: [{"title": "Example", "url": "https://example.com"}])
+
+    result = runner.invoke(app, ["web", "search", "example", "--max-results", "1"])
+
+    assert result.exit_code == 0
+    assert "FastCRW Search: example" in result.output
+    assert "https://example.com" in result.output
+
+
+def test_web_scrape_cli(monkeypatch) -> None:
+    from app.tools.web_fastcrw import WebPage
+
+    monkeypatch.setattr("exec_agent.cli.web_fastcrw.scrape_url", lambda url: WebPage(url, "Example", "Content", "now"))
+
+    result = runner.invoke(app, ["web", "scrape", "https://example.com"])
+
+    assert result.exit_code == 0
+    assert "Scraped and stored" in result.output
+    assert "Example" in result.output
+
+
+def test_web_crawl_cli_hitl_rejects(monkeypatch) -> None:
+    monkeypatch.setenv("EXEC_AGENT_HITL", "true")
+    from exec_agent.config import get_settings
+
+    get_settings.cache_clear()
+    result = runner.invoke(app, ["web", "crawl", "https://example.com", "--limit", "2"], input="2\nn\n")
+
+    assert result.exit_code == 1
+    assert "example.com" in result.output
+    assert "Crawl rejected" in result.output
+    monkeypatch.delenv("EXEC_AGENT_HITL")
+    get_settings.cache_clear()

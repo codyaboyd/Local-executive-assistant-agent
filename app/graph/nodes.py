@@ -11,6 +11,7 @@ from exec_agent.models.llm import generate_text, stream_text
 from app.graph.state import ApprovalDecision, AssistantMessage, AssistantState, ProposedAction
 from app.memory.long_term import LongTermMemoryStore, format_memories_for_prompt
 from app.memory.vector_store import VectorStore, format_vector_results_for_prompt
+from app.tools import web_fastcrw
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,8 @@ def load_context(state: AssistantState) -> AssistantState:
         messages.append({"role": "user", "content": user_input})
     memories = LongTermMemoryStore(state.get("memory_db_path")).search(user_input) if user_input else []
     vector_results = _search_vector_context(state, user_input) if user_input else []
+    web_results = _maybe_search_web_context(state, user_input) if user_input else []
+    vector_results = [*web_results, *vector_results]
     long_term_context = format_memories_for_prompt(memories)
     vector_context = format_vector_results_for_prompt(vector_results)
     prompt = _render_prompt(messages, long_term_context, vector_context)
@@ -104,6 +107,47 @@ def _search_vector_context(state: AssistantState, query: str):
         return store.similarity_search(query, k=int(state.get("vector_search_k", 5)))
     except Exception as exc:  # pragma: no cover - depends on optional local vector runtime state
         logger.warning("Vector context retrieval skipped: %s", exc)
+        return []
+
+
+def _explicitly_requests_web_research(query: str) -> bool:
+    lowered = query.lower()
+    phrases = ("web research", "search the web", "look up", "online research", "browse", "internet", "latest", "current")
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _maybe_search_web_context(state: AssistantState, query: str):
+    """Use FastCRW only when web access is enabled and web research is allowed/requested."""
+
+    if not state.get("web_access_enabled", False):
+        return []
+    if not (_explicitly_requests_web_research(query) or state.get("active_profile_allows_online_research", False)):
+        return []
+    try:
+        results = web_fastcrw.search_web(query, max_results=int(state.get("vector_search_k", 5)))
+        pages = []
+        for result in results:
+            url = result.get("url")
+            if not url:
+                continue
+            if state.get("hitl_enabled", False):
+                action = _approval_action(
+                    "tool_call",
+                    "fastcrw.scrape",
+                    "Scrape a web search result with self-hosted FastCRW.",
+                    {"url": url, "domain": web_fastcrw.target_domain(str(url))},
+                )
+                decision = state.get("approval_handler", _default_approval_handler)(action)
+                if decision.get("status") == "rejected":
+                    continue
+                url = decision.get("payload", {}).get("url", url)
+            pages.append(web_fastcrw.scrape_url(str(url)))
+        return [
+            type("WebVectorResult", (), {"content": page.content, "metadata": page.metadata, "id": page.url, "distance": None})()
+            for page in pages
+        ]
+    except web_fastcrw.FastCRWError as exc:
+        logger.warning("FastCRW web context skipped: %s", exc)
         return []
 
 def human_approval(state: AssistantState) -> AssistantState:

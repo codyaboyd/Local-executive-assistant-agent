@@ -52,3 +52,5 @@ class AssistantState(TypedDict, total=False):
     pending_action: ProposedAction
     last_approval: ApprovalDecision
     approval_handler: Callable[[ProposedAction], ApprovalDecision]
+    web_access_enabled: bool
+    active_profile_allows_online_research: bool

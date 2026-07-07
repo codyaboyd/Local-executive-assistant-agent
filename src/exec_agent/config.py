@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=64, ge=1, validation_alias="EXEC_AGENT_MAX_TOKENS")
     temperature: float = Field(default=0.7, ge=0.0, validation_alias="EXEC_AGENT_TEMPERATURE")
     hitl: bool = Field(default=False, validation_alias="EXEC_AGENT_HITL")
+    fastcrw_base_url: str = Field(default="http://localhost:3002", validation_alias="FASTCRW_BASE_URL")
+    fastcrw_api_key: str | None = Field(default=None, validation_alias="FASTCRW_API_KEY")
+    fastcrw_timeout_seconds: int = Field(default=30, ge=1, validation_alias="FASTCRW_TIMEOUT_SECONDS")
+    fastcrw_max_results: int = Field(default=5, ge=1, validation_alias="FASTCRW_MAX_RESULTS")
+    fastcrw_enable_scrape: bool = Field(default=True, validation_alias="FASTCRW_ENABLE_SCRAPE")
+    fastcrw_enable_crawl: bool = Field(default=False, validation_alias="FASTCRW_ENABLE_CRAWL")
 
     model_config = SettingsConfigDict(
         env_file=".env",

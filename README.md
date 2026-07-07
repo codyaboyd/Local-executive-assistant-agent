@@ -136,3 +136,50 @@ The scaffold is intentionally small and focused. Future work can add agent orche
 ## License
 
 Add your preferred license for this project.
+
+## Using Self-Hosted FastCRW
+
+This project can use a self-hosted FastCRW server for web research. The default
+configuration targets a local server and does **not** use hosted FastCRW by
+default.
+
+### Configuration
+
+Set these environment variables as needed:
+
+```bash
+FASTCRW_BASE_URL=http://localhost:3002
+FASTCRW_API_KEY=              # optional
+FASTCRW_TIMEOUT_SECONDS=30
+FASTCRW_MAX_RESULTS=5
+FASTCRW_ENABLE_SCRAPE=true
+FASTCRW_ENABLE_CRAWL=false
+```
+
+`FASTCRW_API_KEY` is optional and is sent as both a bearer token and `X-API-Key`
+header when present. Crawling is disabled by default because it can touch many
+pages; enable it only for servers and sites you are allowed to crawl.
+
+### CLI commands
+
+```bash
+exec-agent web health
+exec-agent web search "quarterly market outlook"
+exec-agent web scrape "https://example.com"
+exec-agent web crawl "https://example.com" --limit 10
+```
+
+Scraped and crawled page content is stored in the local vector database with
+metadata including `url`, `title`, `fetched_at`, `source_type=web`, and
+`provider=fastcrw_self_hosted`.
+
+### LangGraph behavior and approvals
+
+LangGraph uses FastCRW only when web access is enabled in graph state and either
+the user explicitly asks for web research or the active profile allows online
+research. In human-in-the-loop mode, crawl operations require approval and show
+the target domain plus the maximum page limit; the operator can approve, reject,
+or edit the limit before the crawl runs.
+
+FastCRW errors are surfaced clearly for offline servers, invalid API keys,
+timeouts, empty search results, blocked scrapes, and crawl limit violations.

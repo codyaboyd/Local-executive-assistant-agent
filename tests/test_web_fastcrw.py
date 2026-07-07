@@ -44,7 +44,7 @@ def test_search_web_uses_self_hosted_fastcrw(monkeypatch, tmp_path):
 
     results = web_fastcrw.search_web("local news", max_results=1)
 
-    assert captured == {"url": "http://localhost:3002/search", "body": {"query": "local news", "max_results": 1}, "timeout": 30}
+    assert captured == {"url": "http://localhost:3002/v1/search", "body": {"query": "local news", "limit": 1, "max_results": 1}, "timeout": 30}
     assert results[0]["title"] == "One"
 
 

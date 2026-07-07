@@ -88,7 +88,10 @@ def _headers() -> dict[str, str]:
 def _request(path: str, payload: dict[str, Any] | None = None, *, method: str | None = None) -> dict[str, Any]:
     settings = _settings()
     base_url = str(settings.fastcrw_base_url).rstrip("/")
-    url = f"{base_url}{path}"
+    api_prefix = str(settings.fastcrw_api_prefix).strip().rstrip("/")
+    if api_prefix and not api_prefix.startswith("/"):
+        api_prefix = f"/{api_prefix}"
+    url = f"{base_url}{api_prefix}{path}" if path != "/health" else f"{base_url}{path}"
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request = Request(url, data=body, headers=_headers(), method=method or ("POST" if payload is not None else "GET"))
     try:
@@ -142,7 +145,7 @@ def search_web(query: str, max_results: int = 5) -> list[dict[str, Any]]:
 
     if max_results <= 0:
         return []
-    data = _request("/search", {"query": query, "max_results": max_results})
+    data = _request("/search", {"query": query, "limit": max_results, "max_results": max_results})
     results = _items(data)
     if not results:
         raise FastCRWEmptyResultsError(f"FastCRW returned no search results for {query!r}.")
@@ -154,7 +157,7 @@ def scrape_url(url: str) -> WebPage:
 
     if not _settings().fastcrw_enable_scrape:
         raise FastCRWScrapeBlockedError("FastCRW scraping is disabled by FASTCRW_ENABLE_SCRAPE.")
-    data = _request("/scrape", {"url": url})
+    data = _request("/scrape", {"url": url, "formats": ["markdown"]})
     item = data.get("data", data)
     if not isinstance(item, dict) or item.get("blocked"):
         raise FastCRWScrapeBlockedError(f"FastCRW could not scrape {url}.")
@@ -170,7 +173,7 @@ def crawl_url(url: str, limit: int = 10) -> list[WebPage]:
         raise FastCRWCrawlLimitExceededError("FastCRW crawl limit must be greater than zero.")
     if not _settings().fastcrw_enable_crawl:
         raise FastCRWScrapeBlockedError("FastCRW crawling is disabled by FASTCRW_ENABLE_CRAWL.")
-    data = _request("/crawl", {"url": url, "limit": limit})
+    data = _request("/crawl", {"url": url, "limit": limit, "maxPages": limit})
     pages = [_page(item) for item in _items(data)[:limit]]
     if not pages:
         raise FastCRWEmptyResultsError(f"FastCRW crawled no pages for {url}.")

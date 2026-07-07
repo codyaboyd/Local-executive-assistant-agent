@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     fastcrw_enabled: bool = Field(default=False, validation_alias="FASTCRW_ENABLED")
     fastcrw_crawl_requires_approval: bool = Field(default=False, validation_alias="FASTCRW_CRAWL_REQUIRES_APPROVAL")
     fastcrw_base_url: str = Field(default="http://localhost:3002", validation_alias="FASTCRW_BASE_URL")
+    fastcrw_api_prefix: str = Field(default="/v1", validation_alias="FASTCRW_API_PREFIX")
     fastcrw_api_key: str | None = Field(default=None, validation_alias="FASTCRW_API_KEY")
     fastcrw_timeout_seconds: int = Field(default=30, ge=1, validation_alias="FASTCRW_TIMEOUT_SECONDS")
     fastcrw_max_results: int = Field(default=5, ge=1, validation_alias="FASTCRW_MAX_RESULTS")

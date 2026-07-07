@@ -8,6 +8,7 @@ from exec_agent.config import get_settings
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from app.tools.pdf import ingest_pdf as ingest_pdf_file
+from app.tools.docx import ingest_docx as ingest_docx_file
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 
@@ -158,49 +159,70 @@ def ingest_pdf(path: str) -> None:
     console.print(f"[green]Ingested {chunk_count} PDF chunks from {path}.[/green]")
 
 
+@ingest_app.command("docx")
+def ingest_docx(path: str) -> None:
+    """Extract, chunk, and store a DOCX in the local vector database."""
+
+    try:
+        chunk_count = ingest_docx_file(path)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]Ingested {chunk_count} DOCX chunks from {path}.[/green]")
+
+
 def _format_references(results: list[VectorSearchResult]) -> str:
     refs: list[str] = []
     seen: set[tuple[str, object]] = set()
     for result in results:
         source = str(result.metadata.get("source", "unknown"))
         page = result.metadata.get("page")
-        key = (source, page)
+        section_heading = result.metadata.get("section_heading")
+        key = (source, page or section_heading)
         if key in seen:
             continue
         seen.add(key)
-        refs.append(f"{source} p. {page}" if page else source)
+        if page:
+            refs.append(f"{source} p. {page}")
+        elif section_heading:
+            refs.append(f"{source} section: {section_heading}")
+        else:
+            refs.append(source)
     return ", ".join(refs)
 
 
-def _build_pdf_qa_prompt(question: str, results: list[VectorSearchResult]) -> str:
+def _build_document_qa_prompt(question: str, results: list[VectorSearchResult]) -> str:
     context_lines: list[str] = []
     for index, result in enumerate(results, start=1):
         source = result.metadata.get("source", "unknown")
-        page = result.metadata.get("page", "unknown")
-        context_lines.append(f"[{index}] Source: {source}, page {page}\n{result.content}")
+        file_type = result.metadata.get("file_type", "document")
+        page = result.metadata.get("page")
+        section_heading = result.metadata.get("section_heading")
+        location = f"page {page}" if page else f"section {section_heading}" if section_heading else "unknown location"
+        context_lines.append(f"[{index}] Source: {source}, type {file_type}, {location}\n{result.content}")
     context = "\n\n".join(context_lines)
     return (
-        "Answer the user's question using only the PDF context below. "
-        "When the context supports an answer, include source filename and page references. "
-        "If the context is insufficient, say you do not know based on the uploaded PDFs.\n\n"
-        f"PDF context:\n{context}\n\nQuestion: {question}\nAnswer:"
+        "Answer the user's question using only the document context below. "
+        "When the context supports an answer, include source filename and page or section references. "
+        "If the context is insufficient, say you do not know based on the uploaded documents.\n\n"
+        f"Document context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
 
 
 @app.command("ask")
-def ask(question: str, k: int = typer.Option(5, "--k", "-k", min=1, help="Number of PDF chunks to retrieve.")) -> None:
-    """Ask a question about ingested PDFs."""
+def ask(question: str, k: int = typer.Option(5, "--k", "-k", min=1, help="Number of document chunks to retrieve.")) -> None:
+    """Ask a question about ingested PDF and DOCX documents."""
 
     results = [
         result
         for result in VectorStore().similarity_search(question, k=k)
-        if result.metadata.get("file_type") == "pdf"
+        if result.metadata.get("file_type") in {"pdf", "docx"}
     ]
     if not results:
-        console.print("[yellow]No relevant PDF context found. Ingest PDFs with: python -m exec_agent ingest pdf ./file.pdf[/yellow]")
+        console.print("[yellow]No relevant document context found. Ingest documents with: python -m exec_agent ingest pdf ./file.pdf or python -m exec_agent ingest docx ./file.docx[/yellow]")
         return
 
-    answer = generate_text(_build_pdf_qa_prompt(question, results)).strip()
+    answer = generate_text(_build_document_qa_prompt(question, results)).strip()
     console.print(answer)
     references = _format_references(results)
     if references:

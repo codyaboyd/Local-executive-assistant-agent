@@ -27,7 +27,7 @@ class VectorSearchResult:
 def default_vector_store_path() -> Path:
     """Return the default Chroma persistence directory."""
 
-    return get_settings().expanded_data_dir / "chroma"
+    return get_settings().expanded_vector_db_path
 
 
 class SentenceTransformerEmbeddingFunction:

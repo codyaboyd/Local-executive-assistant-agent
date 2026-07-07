@@ -2,10 +2,10 @@
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 from exec_agent.config import get_settings
+from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 
 app = typer.Typer(
@@ -18,17 +18,9 @@ console = Console()
 
 @app.command()
 def chat() -> None:
-    """Start the placeholder chat interface."""
+    """Start the interactive terminal chat interface."""
 
-    settings = get_settings()
-    console.print(
-        Panel.fit(
-            "[bold green]Executive assistant scaffold is ready.[/bold green]\n\n"
-            "Full agent capabilities are not implemented yet.",
-            title=settings.app_name,
-            border_style="green",
-        )
-    )
+    TerminalChat(console=console).run()
 
 
 @app.command()

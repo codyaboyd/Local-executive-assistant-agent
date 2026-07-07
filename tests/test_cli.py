@@ -9,7 +9,7 @@ def test_chat_command_runs() -> None:
     result = runner.invoke(app, ["chat"])
 
     assert result.exit_code == 0
-    assert "Executive assistant scaffold is ready" in result.output
+    assert "Executive assistant chat" in result.output
 
 
 def test_config_command_runs() -> None:

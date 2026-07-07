@@ -74,3 +74,29 @@ def test_hitl_edits_llm_prompt_and_memory_write() -> None:
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "edited response"},
     ]
+
+
+def test_graph_retrieves_relevant_long_term_memories(tmp_path) -> None:
+    from app.memory.long_term import LongTermMemoryStore
+
+    db_path = tmp_path / "memory.sqlite3"
+    LongTermMemoryStore(db_path).add("User prefers concise answers", ["preference"])
+    graph = build_graph()
+    prompts: list[str] = []
+
+    def fake_streamer(prompt: str):
+        prompts.append(prompt)
+        yield "ok"
+
+    result = graph.invoke(
+        {
+            "messages": [],
+            "user_input": "What are my concise preferences?",
+            "streamer": fake_streamer,
+            "memory_db_path": str(db_path),
+        },
+    )
+
+    assert "Relevant long-term memories" in prompts[0]
+    assert "User prefers concise answers" in prompts[0]
+    assert result["long_term_memories"][0]["content"] == "User prefers concise answers"

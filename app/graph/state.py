@@ -42,6 +42,8 @@ class AssistantState(TypedDict, total=False):
     prompt: str
     response: str
     response_chunks: list[str]
+    long_term_memories: list[dict[str, Any]]
+    memory_db_path: str
     streamer: Callable[[str], Iterable[str]]
     hitl_enabled: bool
     pending_action: ProposedAction

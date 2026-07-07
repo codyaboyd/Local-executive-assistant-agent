@@ -9,6 +9,7 @@ from typing import Any
 from exec_agent.models.llm import generate_text, stream_text
 
 from app.graph.state import ApprovalDecision, AssistantMessage, AssistantState, ProposedAction
+from app.memory.long_term import LongTermMemoryStore, format_memories_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,17 @@ def _messages_from_state(state: AssistantState) -> list[AssistantMessage]:
     return list(state.get("messages", []))
 
 
-def _render_prompt(messages: list[AssistantMessage]) -> str:
-    """Render graph short-term memory as the prompt expected by the local LLM."""
+def _render_prompt(messages: list[AssistantMessage], long_term_context: str = "") -> str:
+    """Render graph memory context as the prompt expected by the local LLM."""
 
-    transcript = [f"{message['role'].title()}: {message['content']}" for message in messages]
+    transcript: list[str] = []
+    if long_term_context:
+        transcript.extend([
+            "Relevant long-term memories:",
+            long_term_context,
+            "",
+        ])
+    transcript.extend(f"{message['role'].title()}: {message['content']}" for message in messages)
     transcript.append("Assistant:")
     return "\n".join(transcript)
 
@@ -61,10 +69,13 @@ def load_context(state: AssistantState) -> AssistantState:
     user_input = state.get("user_input", "")
     if user_input:
         messages.append({"role": "user", "content": user_input})
-    prompt = _render_prompt(messages)
+    memories = LongTermMemoryStore(state.get("memory_db_path")).search(user_input) if user_input else []
+    long_term_context = format_memories_for_prompt(memories)
+    prompt = _render_prompt(messages, long_term_context)
     return {
         "messages": messages,
         "prompt": prompt,
+        "long_term_memories": [memory.__dict__ for memory in memories],
         "pending_action": _approval_action(
             "tool_call",
             "local_llm.generate",

@@ -8,6 +8,7 @@ from exec_agent.config import get_settings
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
+from app.memory.vector_store import VectorSearchResult, VectorStore
 
 app = typer.Typer(
     name="exec-agent",
@@ -16,7 +17,9 @@ app = typer.Typer(
 )
 console = Console(width=140)
 memory_app = typer.Typer(help="Manage SQLite-backed long-term memories.")
+rag_app = typer.Typer(help="Search local vector RAG context.")
 app.add_typer(memory_app, name="memory")
+app.add_typer(rag_app, name="rag")
 
 
 @app.command()
@@ -118,3 +121,23 @@ def memory_delete(memory_id: int) -> None:
         console.print(f"[red]Memory {memory_id} not found.[/red]")
         raise typer.Exit(code=1)
     console.print(f"[green]Deleted memory {memory_id}.[/green]")
+
+
+def _render_vector_table(results: list[VectorSearchResult], *, title: str) -> Table:
+    table = Table(title=title)
+    table.add_column("Rank", style="cyan", no_wrap=True)
+    table.add_column("Content", style="white")
+    table.add_column("Source", style="magenta")
+    table.add_column("Distance", style="dim", no_wrap=True)
+    for index, result in enumerate(results, start=1):
+        distance = "" if result.distance is None else f"{result.distance:.4f}"
+        table.add_row(str(index), result.content, str(result.metadata.get("source", "")), distance)
+    return table
+
+
+@rag_app.command("search")
+def rag_search(query: str, k: int = typer.Option(5, "--k", "-k", min=1, help="Number of similar chunks to return.")) -> None:
+    """Search local vector RAG context by semantic similarity."""
+
+    results = VectorStore().similarity_search(query, k=k)
+    console.print(_render_vector_table(results, title=f"RAG Search: {query}"))

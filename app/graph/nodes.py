@@ -10,6 +10,7 @@ from exec_agent.models.llm import generate_text, stream_text
 
 from app.graph.state import ApprovalDecision, AssistantMessage, AssistantState, ProposedAction
 from app.memory.long_term import LongTermMemoryStore, format_memories_for_prompt
+from app.memory.vector_store import VectorStore, format_vector_results_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,16 @@ def _messages_from_state(state: AssistantState) -> list[AssistantMessage]:
     return list(state.get("messages", []))
 
 
-def _render_prompt(messages: list[AssistantMessage], long_term_context: str = "") -> str:
-    """Render graph memory context as the prompt expected by the local LLM."""
+def _render_prompt(messages: list[AssistantMessage], long_term_context: str = "", vector_context: str = "") -> str:
+    """Render graph memory and RAG context as the prompt expected by the local LLM."""
 
     transcript: list[str] = []
+    if vector_context:
+        transcript.extend([
+            "Relevant vector context:",
+            vector_context,
+            "",
+        ])
     if long_term_context:
         transcript.extend([
             "Relevant long-term memories:",
@@ -70,12 +77,15 @@ def load_context(state: AssistantState) -> AssistantState:
     if user_input:
         messages.append({"role": "user", "content": user_input})
     memories = LongTermMemoryStore(state.get("memory_db_path")).search(user_input) if user_input else []
+    vector_results = _search_vector_context(state, user_input) if user_input else []
     long_term_context = format_memories_for_prompt(memories)
-    prompt = _render_prompt(messages, long_term_context)
+    vector_context = format_vector_results_for_prompt(vector_results)
+    prompt = _render_prompt(messages, long_term_context, vector_context)
     return {
         "messages": messages,
         "prompt": prompt,
         "long_term_memories": [memory.__dict__ for memory in memories],
+        "vector_context": [result.__dict__ for result in vector_results],
         "pending_action": _approval_action(
             "tool_call",
             "local_llm.generate",
@@ -84,6 +94,17 @@ def load_context(state: AssistantState) -> AssistantState:
         ),
     }
 
+
+
+def _search_vector_context(state: AssistantState, query: str):
+    """Retrieve relevant vector context without blocking graph execution when the store is unavailable."""
+
+    try:
+        store = VectorStore(state.get("vector_store_path"))
+        return store.similarity_search(query, k=int(state.get("vector_search_k", 5)))
+    except Exception as exc:  # pragma: no cover - depends on optional local vector runtime state
+        logger.warning("Vector context retrieval skipped: %s", exc)
+        return []
 
 def human_approval(state: AssistantState) -> AssistantState:
     """Pause for human approval before side-effecting tool calls or memory writes."""

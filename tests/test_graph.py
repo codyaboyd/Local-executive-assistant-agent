@@ -100,3 +100,23 @@ def test_graph_retrieves_relevant_long_term_memories(tmp_path) -> None:
     assert "Relevant long-term memories" in prompts[0]
     assert "User prefers concise answers" in prompts[0]
     assert result["long_term_memories"][0]["content"] == "User prefers concise answers"
+
+
+def test_graph_includes_relevant_vector_context(monkeypatch) -> None:
+    from app.memory.vector_store import VectorSearchResult
+
+    class FakeVectorStore:
+        def __init__(self, path=None):
+            assert path == "/tmp/vector-store"
+
+        def similarity_search(self, query: str, k: int = 5):
+            assert query == "What is the travel policy?"
+            assert k == 3
+            return [VectorSearchResult("Travel policy requires receipts", {"source": "handbook.md"}, "doc-1", 0.2)]
+
+    monkeypatch.setattr("app.graph.nodes.VectorStore", FakeVectorStore)
+    loaded = load_context({"messages": [], "user_input": "What is the travel policy?", "vector_store_path": "/tmp/vector-store", "vector_search_k": 3})
+
+    assert "Relevant vector context" in loaded["prompt"]
+    assert "Travel policy requires receipts" in loaded["prompt"]
+    assert loaded["vector_context"][0]["metadata"] == {"source": "handbook.md"}

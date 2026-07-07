@@ -55,3 +55,22 @@ def test_memory_cli_add_list_search_delete(tmp_path, monkeypatch) -> None:
     assert delete_result.exit_code == 0
     assert "Deleted memory 1" in delete_result.output
     get_settings.cache_clear()
+
+
+def test_rag_search_cli(monkeypatch) -> None:
+    from app.memory.vector_store import VectorSearchResult
+
+    class FakeVectorStore:
+        def similarity_search(self, query: str, k: int = 5):
+            assert query == "policy"
+            assert k == 1
+            return [VectorSearchResult("Travel policy requires receipts", {"source": "handbook.md"}, "doc-1", 0.2)]
+
+    monkeypatch.setattr("exec_agent.cli.VectorStore", FakeVectorStore)
+
+    result = runner.invoke(app, ["rag", "search", "policy", "--k", "1"])
+
+    assert result.exit_code == 0
+    assert "RAG Search: policy" in result.output
+    assert "Travel policy requires receipts" in result.output
+    assert "handbook.md" in result.output

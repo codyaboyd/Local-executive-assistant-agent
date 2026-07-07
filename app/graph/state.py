@@ -43,7 +43,10 @@ class AssistantState(TypedDict, total=False):
     response: str
     response_chunks: list[str]
     long_term_memories: list[dict[str, Any]]
+    vector_context: list[dict[str, Any]]
     memory_db_path: str
+    vector_store_path: str
+    vector_search_k: int
     streamer: Callable[[str], Iterable[str]]
     hitl_enabled: bool
     pending_action: ProposedAction

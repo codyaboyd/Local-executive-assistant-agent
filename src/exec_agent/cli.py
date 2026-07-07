@@ -18,6 +18,7 @@ from app.tools.image import describe_image as describe_image_file
 from app.tools import web_fastcrw
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
+from app.evals import render_results_table, run_evals
 
 app = typer.Typer(
     name="exec-agent",
@@ -33,6 +34,7 @@ web_app = typer.Typer(help="Use self-hosted FastCRW for web research.")
 sessions_app = typer.Typer(help="Manage SQLite-backed persistent chat sessions.")
 task_app = typer.Typer(help="Run executive-assistant task workflows without modifying external systems.")
 profile_app = typer.Typer(help="List and activate runtime profiles.")
+eval_app = typer.Typer(help="Run offline testing and evaluation tasks.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
@@ -41,6 +43,17 @@ app.add_typer(web_app, name="web")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(task_app, name="task")
 app.add_typer(profile_app, name="profile")
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.command("run")
+def eval_run() -> None:
+    """Run CI-safe offline evals with mocked tools."""
+
+    results = run_evals()
+    console.print(render_results_table(results))
+    if not all(result.passed for result in results):
+        raise typer.Exit(code=1)
 
 
 def _env_file_path() -> Path:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import TypedDict
+from typing import Any, Literal, TypedDict
 
 
 class AssistantMessage(TypedDict):
@@ -11,6 +11,22 @@ class AssistantMessage(TypedDict):
 
     role: str
     content: str
+
+
+class ProposedAction(TypedDict, total=False):
+    """A side-effecting action that may require human approval."""
+
+    kind: Literal["tool_call", "memory_write"]
+    name: str
+    reason: str
+    payload: dict[str, Any]
+
+
+class ApprovalDecision(TypedDict, total=False):
+    """Human approval result for a proposed action."""
+
+    status: Literal["approved", "rejected", "edited"]
+    payload: dict[str, Any]
 
 
 class AssistantState(TypedDict, total=False):
@@ -27,3 +43,7 @@ class AssistantState(TypedDict, total=False):
     response: str
     response_chunks: list[str]
     streamer: Callable[[str], Iterable[str]]
+    hitl_enabled: bool
+    pending_action: ProposedAction
+    last_approval: ApprovalDecision
+    approval_handler: Callable[[ProposedAction], ApprovalDecision]

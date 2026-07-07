@@ -145,11 +145,18 @@ default.
 
 ### Configuration
 
+Select a runtime profile with `EXEC_AGENT_RUNTIME_PROFILE`:
+
+- `private-offline`: disables web access and FastCRW (`web_enabled=false`, `fastcrw_enabled=false`).
+- `research-online`: enables web access and self-hosted FastCRW (`web_enabled=true`, `fastcrw_enabled=true`) using `FASTCRW_BASE_URL`.
+- `test-hitl`: enables web access, self-hosted FastCRW, and human-in-the-loop approvals; crawl operations require approval before running.
+
 Set these environment variables as needed:
 
 ```bash
+EXEC_AGENT_RUNTIME_PROFILE=private-offline
 FASTCRW_BASE_URL=http://localhost:3002
-FASTCRW_API_KEY=              # optional
+FASTCRW_API_KEY=              # optional for your self-hosted server
 FASTCRW_TIMEOUT_SECONDS=30
 FASTCRW_MAX_RESULTS=5
 FASTCRW_ENABLE_SCRAPE=true
@@ -158,7 +165,9 @@ FASTCRW_ENABLE_CRAWL=false
 
 `FASTCRW_API_KEY` is optional and is sent as both a bearer token and `X-API-Key`
 header when present. Crawling is disabled by default because it can touch many
-pages; enable it only for servers and sites you are allowed to crawl.
+pages; enable it only for servers and sites you are allowed to crawl. The
+assistant defaults to self-hosted FastCRW only and does not call hosted search
+APIs unless you explicitly configure a hosted-compatible endpoint yourself.
 
 ### CLI commands
 

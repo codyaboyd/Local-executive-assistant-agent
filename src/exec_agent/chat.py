@@ -163,6 +163,7 @@ class TerminalChat:
                 self.console.print(chunk, end="", soft_wrap=True)
                 yield chunk
 
+        settings = get_settings()
         graph_state: AssistantState = {
             "messages": [
                 {"role": message.role, "content": message.content}
@@ -172,6 +173,9 @@ class TerminalChat:
             "streamer": streaming_printer,
             "hitl_enabled": self.hitl,
             "approval_handler": self._request_human_approval,
+            "web_access_enabled": settings.web_enabled,
+            "fastcrw_enabled": settings.fastcrw_enabled,
+            "active_profile_allows_online_research": settings.runtime_profile in {"research-online", "test-hitl"},
         }
 
         self.console.print("[bold magenta]Assistant[/bold magenta]: ", end="")

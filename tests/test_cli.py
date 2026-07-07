@@ -356,3 +356,32 @@ def test_task_daily_briefing_combines_memory_docs_and_web(monkeypatch) -> None:
     assert "CEO wants concise board updates" in captured["prompt"]
     assert "board.md" in captured["prompt"]
     assert "https://news.example" in captured["prompt"]
+
+
+def test_profile_list_command_runs(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EXEC_AGENT_DATA_DIR", str(tmp_path / "data"))
+    from exec_agent.config import get_settings
+
+    get_settings.cache_clear()
+    result = runner.invoke(app, ["profile", "list"])
+
+    assert result.exit_code == 0
+    assert "Runtime Profiles" in result.output
+    assert "cpu-safe" in result.output
+    assert "gpu-fast" in result.output
+    assert "research-online" in result.output
+    get_settings.cache_clear()
+
+
+def test_profile_use_persists_profile(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from exec_agent.config import get_settings
+
+    get_settings.cache_clear()
+    result = runner.invoke(app, ["profile", "use", "cpu-safe"])
+
+    assert result.exit_code == 0
+    assert "Activated runtime profile" in result.output
+    assert "cpu-safe" in (tmp_path / ".env").read_text(encoding="utf-8")
+    get_settings.cache_clear()

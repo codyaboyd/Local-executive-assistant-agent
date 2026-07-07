@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from exec_agent.config import get_settings
+from exec_agent.config import RUNTIME_PROFILES, get_settings
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from exec_agent.sessions import ChatSessionStore, PersistedChatSession
@@ -32,6 +32,7 @@ image_app = typer.Typer(help="Analyze images with local Hugging Face vision-lang
 web_app = typer.Typer(help="Use self-hosted FastCRW for web research.")
 sessions_app = typer.Typer(help="Manage SQLite-backed persistent chat sessions.")
 task_app = typer.Typer(help="Run executive-assistant task workflows without modifying external systems.")
+profile_app = typer.Typer(help="List and activate runtime profiles.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
@@ -39,6 +40,72 @@ app.add_typer(image_app, name="image")
 app.add_typer(web_app, name="web")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(task_app, name="task")
+app.add_typer(profile_app, name="profile")
+
+
+def _env_file_path() -> Path:
+    return Path(".env")
+
+
+def _write_runtime_profile_to_env(profile: str) -> None:
+    env_path = _env_file_path()
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    updated = False
+    rendered: list[str] = []
+    for line in lines:
+        if line.startswith("EXEC_AGENT_RUNTIME_PROFILE="):
+            rendered.append(f"EXEC_AGENT_RUNTIME_PROFILE={profile}")
+            updated = True
+        else:
+            rendered.append(line)
+    if not updated:
+        rendered.append(f"EXEC_AGENT_RUNTIME_PROFILE={profile}")
+    env_path.write_text("\n".join(rendered).rstrip() + "\n", encoding="utf-8")
+    get_settings.cache_clear()
+
+
+@profile_app.command("list")
+def profile_list() -> None:
+    """List available runtime profiles and their controls."""
+
+    active_profile = get_settings().runtime_profile
+    table = Table(title="Runtime Profiles")
+    table.add_column("Active", style="green", no_wrap=True)
+    table.add_column("Profile", style="cyan", no_wrap=True)
+    table.add_column("Model", style="white")
+    table.add_column("Device", style="magenta", no_wrap=True)
+    table.add_column("Web", style="yellow", no_wrap=True)
+    table.add_column("HITL", style="yellow", no_wrap=True)
+    table.add_column("Vector DB", style="blue")
+    table.add_column("Log", style="dim", no_wrap=True)
+    for name, profile in RUNTIME_PROFILES.items():
+        vector_path = get_settings().expanded_data_dir / profile.vector_db_subdir
+        table.add_row(
+            "*" if name == active_profile else "",
+            name,
+            profile.model_id,
+            profile.device,
+            str(profile.web_enabled),
+            str(profile.hitl),
+            str(vector_path),
+            profile.log_level,
+        )
+    console.print(table)
+
+
+@profile_app.command("use")
+def profile_use(profile: str = typer.Argument(..., help="Runtime profile to activate.")) -> None:
+    """Persist the active runtime profile in the local .env file."""
+
+    if profile not in RUNTIME_PROFILES:
+        valid = ", ".join(RUNTIME_PROFILES)
+        console.print(f"[red]Unknown profile {profile!r}. Choose one of: {valid}[/red]")
+        raise typer.Exit(code=1)
+    _write_runtime_profile_to_env(profile)
+    settings = get_settings()
+    console.print(f"[green]Activated runtime profile:[/green] {settings.runtime_profile}")
+    console.print(f"Model: {settings.model_id}; device: {settings.device}; web: {settings.web_enabled}; HITL: {settings.hitl}")
+    console.print(f"Vector DB: {settings.expanded_vector_db_path}; log level: {settings.log_level}")
 
 
 def _read_task_input(text: str | None = None, path: str | None = None) -> str:
@@ -279,6 +346,7 @@ def config() -> None:
     table.add_row("environment", settings.environment)
     table.add_row("log_level", settings.log_level)
     table.add_row("data_dir", str(settings.expanded_data_dir))
+    table.add_row("vector_db_path", str(settings.expanded_vector_db_path))
     table.add_row("model_id", settings.model_id)
     table.add_row("image_caption_model_id", settings.image_caption_model_id)
     table.add_row("image_qa_model_id", settings.image_qa_model_id)

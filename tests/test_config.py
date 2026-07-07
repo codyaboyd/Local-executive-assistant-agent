@@ -39,3 +39,31 @@ def test_test_hitl_profile_requires_crawl_approval() -> None:
     assert settings.fastcrw_enabled is True
     assert settings.hitl is True
     assert settings.fastcrw_crawl_requires_approval is True
+
+
+def test_cpu_safe_profile_controls_runtime_defaults() -> None:
+    settings = Settings(EXEC_AGENT_RUNTIME_PROFILE="cpu-safe", EXEC_AGENT_MODEL_ID="ignored", EXEC_AGENT_DEVICE="cuda")
+
+    assert settings.model_id == "sshleifer/tiny-gpt2"
+    assert settings.device == "cpu"
+    assert settings.web_enabled is False
+    assert settings.hitl is False
+    assert str(settings.expanded_vector_db_path).endswith("profiles/cpu-safe/chroma")
+    assert settings.log_level == "INFO"
+
+
+def test_gpu_fast_profile_controls_runtime_defaults() -> None:
+    settings = Settings(EXEC_AGENT_RUNTIME_PROFILE="gpu-fast")
+
+    assert settings.model_id == "distilgpt2"
+    assert settings.device == "cuda"
+    assert settings.web_enabled is False
+    assert settings.hitl is False
+    assert str(settings.expanded_vector_db_path).endswith("profiles/gpu-fast/chroma")
+    assert settings.log_level == "WARNING"
+
+
+def test_explicit_vector_db_path_overrides_profile_default() -> None:
+    settings = Settings(EXEC_AGENT_RUNTIME_PROFILE="research-online", EXEC_AGENT_VECTOR_DB_PATH="~/custom-vector")
+
+    assert settings.expanded_vector_db_path == Path("~/custom-vector").expanduser()

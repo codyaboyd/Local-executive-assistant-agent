@@ -186,11 +186,22 @@ port. `FASTCRW_API_KEY` is optional for self-hosted FastCRW and may be left blan
 
 ### Configuration
 
-Select a runtime profile with `EXEC_AGENT_RUNTIME_PROFILE`:
+Select a runtime profile with `EXEC_AGENT_RUNTIME_PROFILE`, or manage profiles from the CLI:
 
-- `private-offline`: disables web access and FastCRW (`web_enabled=false`, `fastcrw_enabled=false`).
+```bash
+python -m exec_agent profile list
+python -m exec_agent profile use cpu-safe
+```
+
+Profiles control the text model id, device mode, web access, human-in-the-loop (HITL) approvals, vector database path, and logging verbosity:
+
+- `cpu-safe`: CPU-only local execution with web access and HITL disabled. Uses a profile-scoped vector DB under the data directory.
+- `gpu-fast`: CUDA/GPU local execution for faster inference with web access and HITL disabled. Uses its own profile-scoped vector DB.
+- `private-offline`: local-only mode with web access and FastCRW disabled.
 - `research-online`: enables web access and self-hosted FastCRW (`web_enabled=true`, `fastcrw_enabled=true`) using `FASTCRW_BASE_URL`.
 - `test-hitl`: enables web access, self-hosted FastCRW, and human-in-the-loop approvals; crawl operations require approval before running.
+
+Set `EXEC_AGENT_VECTOR_DB_PATH` to override the vector database path for any profile.
 
 Set these environment variables as needed:
 

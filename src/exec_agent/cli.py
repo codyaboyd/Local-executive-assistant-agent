@@ -9,6 +9,8 @@ from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from app.tools.pdf import ingest_pdf as ingest_pdf_file
 from app.tools.docx import ingest_docx as ingest_docx_file
+from app.tools.image import ask_image as ask_image_file
+from app.tools.image import describe_image as describe_image_file
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 
@@ -21,9 +23,11 @@ console = Console(width=140)
 memory_app = typer.Typer(help="Manage SQLite-backed long-term memories.")
 rag_app = typer.Typer(help="Search local vector RAG context.")
 ingest_app = typer.Typer(help="Ingest documents into local vector RAG context.")
+image_app = typer.Typer(help="Analyze images with local Hugging Face vision-language models.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
+app.add_typer(image_app, name="image")
 
 
 @app.command()
@@ -48,6 +52,8 @@ def config() -> None:
     table.add_row("log_level", settings.log_level)
     table.add_row("data_dir", str(settings.expanded_data_dir))
     table.add_row("model_id", settings.model_id)
+    table.add_row("image_caption_model_id", settings.image_caption_model_id)
+    table.add_row("image_qa_model_id", settings.image_qa_model_id)
     table.add_row("device", settings.device)
     table.add_row("max_tokens", str(settings.max_tokens))
     table.add_row("temperature", str(settings.temperature))
@@ -169,6 +175,50 @@ def ingest_docx(path: str) -> None:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(f"[green]Ingested {chunk_count} DOCX chunks from {path}.[/green]")
+
+
+@image_app.command("describe")
+def image_describe(
+    path: str,
+    model_id: str | None = typer.Option(None, "--model", help="Hugging Face image-to-text model to run locally."),
+    device: str | None = typer.Option(None, "--device", help="Device for inference: auto, cpu, or cuda."),
+) -> None:
+    """Describe an image and store the description as searchable RAG context."""
+
+    try:
+        result = describe_image_file(path, model_id=model_id, device=_normalize_device_option(device))
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(result.text)
+    console.print(f"[green]Stored image description in vector context for {path}.[/green]")
+
+
+@image_app.command("ask")
+def image_ask(
+    path: str,
+    question: str,
+    model_id: str | None = typer.Option(None, "--model", help="Hugging Face visual-question-answering model to run locally."),
+    device: str | None = typer.Option(None, "--device", help="Device for inference: auto, cpu, or cuda."),
+) -> None:
+    """Ask a question about an image and store the answer as searchable RAG context."""
+
+    try:
+        result = ask_image_file(path, question, model_id=model_id, device=_normalize_device_option(device))
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(result.text)
+    console.print(f"[green]Stored image answer in vector context for {path}.[/green]")
+
+
+def _normalize_device_option(device: str | None) -> str | None:
+    if device is None:
+        return None
+    normalized = device.lower()
+    if normalized not in {"auto", "cpu", "cuda"}:
+        raise typer.BadParameter("device must be one of: auto, cpu, cuda")
+    return normalized
 
 
 def _format_references(results: list[VectorSearchResult]) -> str:

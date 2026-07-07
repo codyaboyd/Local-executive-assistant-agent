@@ -133,3 +133,40 @@ def test_ask_cli_uses_pdf_and_docx_context_and_prints_references(monkeypatch) ->
     assert "References: handbook.pdf p. 7, handbook.docx section: Approvals" in result.output
     assert "Source: handbook.pdf, type pdf, page 7" in captured["prompt"]
     assert "Source: handbook.docx, type docx, section Approvals" in captured["prompt"]
+
+
+def test_image_describe_cli(monkeypatch) -> None:
+    from app.tools.image import ImageAnalysisResult
+
+    def fake_describe(path, model_id=None, device=None):
+        assert path == "./image.png"
+        assert model_id == "caption-model"
+        assert device == "cpu"
+        return ImageAnalysisResult("a conference room", {"source": "image.png"})
+
+    monkeypatch.setattr("exec_agent.cli.describe_image_file", fake_describe)
+
+    result = runner.invoke(app, ["image", "describe", "./image.png", "--model", "caption-model", "--device", "cpu"])
+
+    assert result.exit_code == 0
+    assert "a conference room" in result.output
+    assert "Stored image description" in result.output
+
+
+def test_image_ask_cli(monkeypatch) -> None:
+    from app.tools.image import ImageAnalysisResult
+
+    def fake_ask(path, question, model_id=None, device=None):
+        assert path == "./image.png"
+        assert question == "what is shown here?"
+        assert model_id == "vqa-model"
+        assert device == "auto"
+        return ImageAnalysisResult("Question: what is shown here?\nAnswer: a chart", {"source": "image.png"})
+
+    monkeypatch.setattr("exec_agent.cli.ask_image_file", fake_ask)
+
+    result = runner.invoke(app, ["image", "ask", "./image.png", "what is shown here?", "--model", "vqa-model", "--device", "auto"])
+
+    assert result.exit_code == 0
+    assert "Answer: a chart" in result.output
+    assert "Stored image answer" in result.output

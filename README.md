@@ -16,6 +16,7 @@ A Python 3.11+ Linux terminal-based scaffold for a local-first AI executive assi
 - PDF ingestion into local vector storage with source/page metadata
 - DOCX ingestion into local vector storage with source/section metadata
 - Question answering over uploaded PDFs and DOCX files with page or section references when available
+- Local image description and visual question answering for PNG, JPG, JPEG, and WEBP files, with generated context stored in vector search
 - Module entrypoint that runs with:
 
 ```bash
@@ -93,6 +94,20 @@ Ask a question about ingested PDFs and DOCX files:
 ```bash
 uv run python -m exec_agent ask "question about uploaded documents"
 ```
+
+Describe an image and save the description as searchable vector context:
+
+```bash
+uv run python -m exec_agent image describe ./image.png
+```
+
+Ask a question about an image and save the answer as searchable vector context:
+
+```bash
+uv run python -m exec_agent image ask ./image.png "what is shown here?"
+```
+
+Image commands use local Hugging Face vision-language models. Use `--device cpu`, `--device cuda`, or `--device auto` to control CPU/GPU inference, and `--model` to select a different local-compatible model.
 
 You can also inspect the effective configuration:
 

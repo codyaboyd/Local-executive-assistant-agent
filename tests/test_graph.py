@@ -6,7 +6,7 @@ def test_graph_shape_and_state_memory() -> None:
     graph = build_graph()
 
     def fake_streamer(prompt: str):
-        assert prompt == "User: hello\nAssistant:"
+        assert prompt.endswith("User: hello\nAssistant:")
         yield "hi"
 
     result = graph.invoke(
@@ -18,6 +18,8 @@ def test_graph_shape_and_state_memory() -> None:
         {"role": "assistant", "content": "hi"},
     ]
     assert result["response_chunks"] == ["hi"]
+    assert result["intent"] == "general_chat"
+    assert result["tool_call_log"][0]["tool"] == "general_chat.respond"
 
 
 def test_nodes_log(caplog) -> None:
@@ -133,3 +135,28 @@ def test_web_context_requires_fastcrw_enabled(monkeypatch) -> None:
         "latest news",
     ) == []
     assert calls == []
+
+
+def test_graph_routes_each_intent_to_tool_node() -> None:
+    cases = [
+        ("What does the travel policy document say?", "document_question", "documents.vector_search"),
+        ("Search the web for the latest market news", "web_research", "fastcrw.web_research"),
+        ("What is in this screenshot?", "image_question", "image.analyze"),
+        ("Remember that I prefer morning briefings", "memory_update", "memory.update"),
+        ("Plan my next steps for the launch", "task_planning", "planner.create_plan"),
+    ]
+    graph = build_graph()
+
+    for user_input, expected_intent, expected_tool in cases:
+        result = graph.invoke({"messages": [], "user_input": user_input, "streamer": lambda prompt: ["ok"]})
+        assert result["intent"] == expected_intent
+        assert result["tool_call_log"][-1]["tool"] == expected_tool
+
+
+def test_uncertain_intent_uses_observable_fallback(capsys) -> None:
+    graph = build_graph()
+    result = graph.invoke({"messages": [], "user_input": "maybe", "streamer": lambda prompt: ["ok"]})
+
+    assert result["intent"] == "general_chat"
+    assert result["tool_call_log"][-1]["tool"] == "fallback.general_chat"
+    assert "TOOL CALL: fallback.general_chat intent=uncertain" in capsys.readouterr().out

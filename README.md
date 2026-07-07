@@ -213,6 +213,15 @@ metadata including `url`, `title`, `fetched_at`, `source_type=web`, and
 
 ### LangGraph behavior and approvals
 
+LangGraph first classifies each user turn as `general_chat`,
+`document_question`, `web_research`, `image_question`, `memory_update`, or
+`task_planning`, then routes the turn to the matching tool node before approval
+and local LLM response generation. If the classifier cannot choose a route with
+sufficient confidence, the graph uses a safe general-chat fallback that asks for
+clarification when needed. Every tool node prints a `TOOL CALL: ...` line and
+records the call in graph state so terminal sessions can observe routing and tool
+usage.
+
 LangGraph uses FastCRW only when web access is enabled in graph state and either
 the user explicitly asks for web research or the active profile allows online
 research. In human-in-the-loop mode, crawl operations require approval and show

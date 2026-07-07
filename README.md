@@ -13,6 +13,8 @@ A Python 3.11+ Linux terminal-based scaffold for a local-first AI executive assi
 - Pydantic Settings configuration loading from environment variables and `.env`
 - Example environment file at `.env.example`
 - Basic pytest coverage for CLI and configuration behavior
+- PDF ingestion into local vector storage with source/page metadata
+- Question answering over uploaded PDFs with page references when available
 - Module entrypoint that runs with:
 
 ```bash
@@ -71,6 +73,18 @@ Run the placeholder chat command:
 
 ```bash
 uv run python -m exec_agent chat
+```
+
+Ingest a PDF into local RAG storage:
+
+```bash
+uv run python -m exec_agent ingest pdf ./file.pdf
+```
+
+Ask a question about ingested PDFs:
+
+```bash
+uv run python -m exec_agent ask "question about uploaded PDFs"
 ```
 
 You can also inspect the effective configuration:

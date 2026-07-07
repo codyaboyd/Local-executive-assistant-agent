@@ -13,6 +13,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from exec_agent.config import get_settings
+from app.graph.builder import build_graph
+from app.graph.state import AssistantState
 from exec_agent.models.llm import generate_text, stream_text
 
 
@@ -109,6 +111,7 @@ class TerminalChat:
         self.console = console or Console()
         self.session = session or ChatSession()
         self.streamer = streamer
+        self.graph = build_graph()
         self.input_reader = input_reader or (lambda prompt: Prompt.ask(prompt, console=self.console))
 
     def run(self) -> None:
@@ -149,17 +152,31 @@ class TerminalChat:
             self._handle_user_message(raw_input)
 
     def _handle_user_message(self, user_text: str) -> None:
-        self.session.add("user", user_text)
-        prompt = self.session.render_prompt()
         response_chunks: list[str] = []
 
+        def streaming_printer(prompt: str) -> Iterable[str]:
+            for chunk in self.streamer(prompt):
+                response_chunks.append(chunk)
+                self.console.print(chunk, end="", soft_wrap=True)
+                yield chunk
+
+        graph_state: AssistantState = {
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in self.session.messages
+            ],
+            "user_input": user_text,
+            "streamer": streaming_printer,
+        }
+
         self.console.print("[bold magenta]Assistant[/bold magenta]: ", end="")
-        for chunk in self.streamer(prompt):
-            response_chunks.append(chunk)
-            self.console.print(chunk, end="", soft_wrap=True)
+        result = self.graph.invoke(graph_state)
         self.console.print()
 
-        self.session.add("assistant", "".join(response_chunks))
+        self.session.messages = [
+            ChatMessage(role=message["role"], content=message["content"])
+            for message in result.get("messages", [])
+        ]
 
     def _print_help(self) -> None:
         self.console.print(

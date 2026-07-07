@@ -1,7 +1,10 @@
 """Command-line interface for the executive assistant scaffold."""
 
+from pathlib import Path
+
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from exec_agent.config import get_settings
@@ -28,12 +31,161 @@ ingest_app = typer.Typer(help="Ingest documents into local vector RAG context.")
 image_app = typer.Typer(help="Analyze images with local Hugging Face vision-language models.")
 web_app = typer.Typer(help="Use self-hosted FastCRW for web research.")
 sessions_app = typer.Typer(help="Manage SQLite-backed persistent chat sessions.")
+task_app = typer.Typer(help="Run executive-assistant task workflows without modifying external systems.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(image_app, name="image")
 app.add_typer(web_app, name="web")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(task_app, name="task")
+
+
+def _read_task_input(text: str | None = None, path: str | None = None) -> str:
+    """Read workflow input from an inline string, a file path, or stdin."""
+
+    if text and path:
+        raise typer.BadParameter("Use either --text or --file, not both.")
+    if path:
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            console.print(f"[red]File not found: {path}[/red]")
+            raise typer.Exit(code=1) from exc
+    if text:
+        return text
+    stdin_text = typer.get_text_stream("stdin").read()
+    if stdin_text.strip():
+        return stdin_text
+    console.print("[red]Provide input with --text, --file, or stdin.[/red]")
+    raise typer.Exit(code=1)
+
+
+def _render_workflow_result(title: str, body: str) -> None:
+    console.print(Panel(body.strip() or "[dim](no output)[/dim]", title=title, border_style="cyan", expand=False))
+
+
+def _generate_workflow(title: str, prompt: str) -> None:
+    _render_workflow_result(title, generate_text(prompt).strip())
+
+
+def _web_research_context(topic: str, max_results: int) -> str:
+    try:
+        results = web_fastcrw.search_web(topic, max_results=max_results)
+    except web_fastcrw.FastCRWError as exc:
+        return f"Web search unavailable: {exc}"
+    lines = []
+    for index, result in enumerate(results, start=1):
+        title = str(result.get("title", "Untitled"))
+        url = str(result.get("url", ""))
+        snippet = str(result.get("snippet") or result.get("description") or result.get("content") or "")
+        lines.append(f"[{index}] {title}\nURL: {url}\nSnippet: {snippet}".strip())
+    return "\n\n".join(lines)
+
+
+def _rag_context(query: str, k: int) -> str:
+    results = VectorStore().similarity_search(query, k=k)
+    if not results:
+        return "No local document context found."
+    lines = []
+    for index, result in enumerate(results, start=1):
+        source = result.metadata.get("source", "unknown")
+        lines.append(f"[{index}] Source: {source}\n{result.content}")
+    return "\n\n".join(lines)
+
+
+@task_app.command("summarize-notes")
+def task_summarize_notes(
+    text: str | None = typer.Option(None, "--text", help="Notes text to summarize."),
+    file: str | None = typer.Option(None, "--file", "-f", help="Path to a notes file to summarize."),
+) -> None:
+    """Summarize notes into concise executive-ready bullets."""
+
+    notes = _read_task_input(text, file)
+    _generate_workflow(
+        "Notes Summary",
+        "Summarize these notes for an executive. Return clean terminal output with sections: Key Points, Decisions, Risks, and Next Steps.\n\n"
+        f"Notes:\n{notes}\n",
+    )
+
+
+@task_app.command("draft-email")
+def task_draft_email(
+    prompt: str = typer.Argument(..., help="What the email should accomplish."),
+    tone: str = typer.Option("professional", "--tone", help="Desired email tone."),
+    context: str | None = typer.Option(None, "--context", help="Additional context for the draft."),
+) -> None:
+    """Draft email text only; does not send email or touch external systems."""
+
+    _generate_workflow(
+        "Email Draft (not sent)",
+        "Draft email text only. Do not imply the email was sent. Return Subject and Body. "
+        f"Tone: {tone}. Goal: {prompt}. Context: {context or 'None'}",
+    )
+
+
+@task_app.command("meeting-brief")
+def task_meeting_brief(
+    topic: str = typer.Argument(..., help="Meeting topic or purpose."),
+    attendees: list[str] = typer.Option(None, "--attendee", "-a", help="Attendee name; may be used multiple times."),
+    context_file: str | None = typer.Option(None, "--file", "-f", help="Optional context file."),
+) -> None:
+    """Create a meeting brief from supplied context."""
+
+    context = _read_task_input(path=context_file) if context_file else ""
+    attendee_text = ", ".join(attendees or []) or "Not specified"
+    _generate_workflow(
+        "Meeting Brief",
+        "Create an executive meeting brief with sections: Objective, Attendees, Background, Suggested Agenda, Questions to Ask, and Prep Checklist.\n"
+        f"Topic: {topic}\nAttendees: {attendee_text}\nContext:\n{context}",
+    )
+
+
+@task_app.command("research-topic")
+def task_research_topic(topic: str, max_results: int = typer.Option(5, "--max-results", "-n", min=1)) -> None:
+    """Research a topic using configured web search without scraping or modifying external systems."""
+
+    web_context = _web_research_context(topic, max_results)
+    _generate_workflow(
+        "Topic Research",
+        "Prepare a concise executive research memo using the web search results below. Include Overview, Key Findings, Watchouts, and Sources.\n\n"
+        f"Topic: {topic}\n\nWeb results:\n{web_context}",
+    )
+
+
+@task_app.command("action-items")
+def task_action_items(
+    text: str | None = typer.Option(None, "--text", help="Document text to inspect."),
+    file: str | None = typer.Option(None, "--file", "-f", help="Path to a document text file."),
+) -> None:
+    """Extract action items from document text."""
+
+    document = _read_task_input(text, file)
+    _generate_workflow(
+        "Action Items",
+        "Extract action items from this document. Return a terminal-friendly table-like list with Owner, Action, Due Date, Priority, and Evidence. Use 'Unassigned' or 'Not specified' where missing.\n\n"
+        f"Document:\n{document}",
+    )
+
+
+@task_app.command("daily-briefing")
+def task_daily_briefing(
+    focus: str = typer.Option("today", "--focus", help="Briefing focus or query."),
+    k: int = typer.Option(5, "--k", min=1, help="Number of local document chunks to include."),
+    max_results: int = typer.Option(5, "--max-results", "-n", min=1, help="Number of web search results to include."),
+) -> None:
+    """Create a daily briefing from local memory, local docs, and configured web search."""
+
+    memory_store = LongTermMemoryStore()
+    memories = memory_store.search(focus, limit=10) or memory_store.list()[:10]
+    memory_context = "\n".join(f"- {memory.content} (source={memory.source})" for memory in memories) or "No memory context found."
+    docs_context = _rag_context(focus, k)
+    web_context = _web_research_context(focus, max_results)
+    _generate_workflow(
+        "Daily Briefing",
+        "Create a daily executive briefing from memory, local documents, and web results. Include Priorities, Schedule/Context, Decisions Needed, Risks, Opportunities, and Source Notes. Do not claim to update calendars, send messages, or modify external systems.\n\n"
+        f"Focus: {focus}\n\nMemory:\n{memory_context}\n\nDocuments:\n{docs_context}\n\nWeb:\n{web_context}",
+    )
 
 
 @app.command()

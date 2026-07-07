@@ -264,3 +264,95 @@ def test_chat_command_accepts_session_option(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Session: work" in result.output
     get_settings.cache_clear()
+
+
+def test_task_summarize_notes_cli(monkeypatch) -> None:
+    captured = {}
+
+    def fake_generate_text(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "Key Points\n- Revenue up\nNext Steps\n- Follow up"
+
+    monkeypatch.setattr("exec_agent.cli.generate_text", fake_generate_text)
+
+    result = runner.invoke(app, ["task", "summarize-notes", "--text", "Revenue is up. Follow up with finance."])
+
+    assert result.exit_code == 0
+    assert "Notes Summary" in result.output
+    assert "Revenue up" in result.output
+    assert "Key Points" in captured["prompt"]
+
+
+def test_task_draft_email_cli_does_not_send(monkeypatch) -> None:
+    monkeypatch.setattr("exec_agent.cli.generate_text", lambda prompt: "Subject: Update\nBody: Hello team")
+
+    result = runner.invoke(app, ["task", "draft-email", "ask finance for numbers", "--tone", "warm"])
+
+    assert result.exit_code == 0
+    assert "Email Draft (not sent)" in result.output
+    assert "Subject: Update" in result.output
+
+
+def test_task_research_topic_uses_search_only(monkeypatch) -> None:
+    captured = {}
+
+    def fake_search(query, max_results=5):
+        captured["query"] = query
+        captured["max_results"] = max_results
+        return [{"title": "Market note", "url": "https://example.com", "snippet": "Example snippet"}]
+
+    def fake_generate_text(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "Overview\n- Example finding\nSources\n- https://example.com"
+
+    monkeypatch.setattr("exec_agent.cli.web_fastcrw.search_web", fake_search)
+    monkeypatch.setattr("exec_agent.cli.generate_text", fake_generate_text)
+
+    result = runner.invoke(app, ["task", "research-topic", "AI market", "--max-results", "1"])
+
+    assert result.exit_code == 0
+    assert "Topic Research" in result.output
+    assert "Example finding" in result.output
+    assert captured["query"] == "AI market"
+    assert captured["max_results"] == 1
+    assert "https://example.com" in captured["prompt"]
+
+
+def test_task_daily_briefing_combines_memory_docs_and_web(monkeypatch) -> None:
+    from app.memory.long_term import LongTermMemory
+    from app.memory.vector_store import VectorSearchResult
+
+    captured = {}
+
+    class FakeMemoryStore:
+        def search(self, query: str, limit: int = 10):
+            assert query == "board prep"
+            return [LongTermMemory(1, "CEO wants concise board updates", ["preference"], "manual", "now", "now")]
+
+        def list(self):
+            return []
+
+    class FakeVectorStore:
+        def similarity_search(self, query: str, k: int = 5):
+            assert query == "board prep"
+            assert k == 1
+            return [VectorSearchResult("Board packet is due Friday", {"source": "board.md"}, "doc-1", 0.1)]
+
+    monkeypatch.setattr("exec_agent.cli.LongTermMemoryStore", FakeMemoryStore)
+    monkeypatch.setattr("exec_agent.cli.VectorStore", FakeVectorStore)
+    monkeypatch.setattr("exec_agent.cli.web_fastcrw.search_web", lambda query, max_results=5: [{"title": "News", "url": "https://news.example"}])
+
+    def fake_generate_text(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "Priorities\n- Board packet"
+
+    monkeypatch.setattr("exec_agent.cli.generate_text", fake_generate_text)
+
+    result = runner.invoke(app, ["task", "daily-briefing", "--focus", "board prep", "--k", "1", "--max-results", "1"])
+
+    assert result.exit_code == 0
+    assert "Daily Briefing" in result.output
+    assert "Board packet" in result.output
+    assert "CEO wants concise board updates" in captured["prompt"]
+    assert "board.md" in captured["prompt"]
+    assert "https://news.example" in captured["prompt"]

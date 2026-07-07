@@ -1,122 +1,101 @@
 # Local Executive Assistant AI Agent
 
-A local-first AI executive assistant designed to help busy leaders stay organized, communicate clearly, and make better use of their time. The agent can support day-to-day executive workflows such as calendar preparation, meeting briefings, task tracking, email drafting, follow-ups, and decision support.
+A Python 3.11+ Linux terminal-based scaffold for a local-first AI executive assistant. This initial version provides the project structure, CLI shell, configuration loading, terminal UI components, and tests needed to begin building the full assistant.
 
-## Overview
+> This is an initial scaffold only. Full agent capabilities such as calendar integration, email drafting, document retrieval, and model orchestration are intentionally not implemented yet.
 
-The Local Executive Assistant AI Agent acts as a trusted operational partner for executives, founders, managers, and teams. It is intended to reduce administrative overhead while keeping the user in control of sensitive decisions and communications.
+## Features in This Scaffold
 
-The agent can be adapted to work with local files, calendars, inboxes, notes, task systems, and internal knowledge bases depending on the integrations you choose to add.
+- Python 3.11+ package using a `src/` layout
+- Dependency management with `uv` via `pyproject.toml`
+- Typer-powered CLI commands
+- Rich terminal output
+- Pydantic Settings configuration loading from environment variables and `.env`
+- Example environment file at `.env.example`
+- Basic pytest coverage for CLI and configuration behavior
+- Module entrypoint that runs with:
 
-## Core Capabilities
-
-- **Schedule management**: Help review upcoming meetings, identify conflicts, and prepare daily agendas.
-- **Meeting preparation**: Generate briefs with attendees, goals, context, open questions, and relevant background.
-- **Follow-up tracking**: Extract action items, owners, deadlines, and next steps from notes or transcripts.
-- **Email and message drafting**: Draft clear, concise replies, status updates, summaries, and outreach messages.
-- **Task prioritization**: Organize tasks by urgency, importance, deadlines, and strategic impact.
-- **Research summaries**: Condense documents, web research, reports, or internal notes into executive-ready summaries.
-- **Decision support**: Compare options, highlight trade-offs, surface risks, and suggest next actions.
-- **Knowledge recall**: Retrieve relevant local context from files, notes, and prior meeting materials.
-
-## Example Use Cases
-
-- Create a morning executive briefing from calendar events, priority tasks, and unread updates.
-- Summarize a board packet into key points, risks, questions, and recommended discussion topics.
-- Turn meeting notes into an action plan with owners, deadlines, and follow-up messages.
-- Draft a professional response to a complex email thread.
-- Prepare a one-page briefing before a customer, investor, hiring, or leadership meeting.
-- Track commitments made across meetings and remind the executive before deadlines.
-
-## Design Principles
-
-1. **Local-first by default**: Prefer local context and user-controlled data sources wherever possible.
-2. **Human-in-the-loop**: Draft, recommend, and organize; do not send messages or make commitments without approval.
-3. **Executive-ready output**: Be concise, structured, and focused on decisions, risks, and next steps.
-4. **Privacy-conscious**: Treat calendar, email, contacts, documents, and notes as sensitive information.
-5. **Context-aware**: Adapt tone, detail, and recommendations to the executive's preferences and priorities.
-
-## Suggested Agent Responsibilities
-
-The assistant should be able to:
-
-- Maintain a prioritized view of current commitments.
-- Prepare agendas and pre-read summaries before meetings.
-- Capture and organize decisions, action items, and blockers.
-- Draft communications in the user's preferred voice.
-- Identify scheduling conflicts and workload bottlenecks.
-- Surface unresolved follow-ups and aging tasks.
-- Produce weekly summaries of progress, risks, and upcoming priorities.
-
-## Example Prompts
-
-```text
-Prepare my morning briefing for today using my calendar, tasks, and unread priority messages.
+```bash
+python -m exec_agent chat
 ```
 
-```text
-Summarize these meeting notes into decisions, action items, open questions, and suggested follow-up emails.
-```
+## Repository Structure
 
 ```text
-Draft a concise executive update for the leadership team based on this project status document.
+.
+├── .env.example
+├── README.md
+├── pyproject.toml
+├── src
+│   └── exec_agent
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── cli.py
+│       └── config.py
+└── tests
+    ├── test_cli.py
+    └── test_config.py
 ```
 
-```text
-Review my upcoming week and identify conflicts, preparation gaps, and high-priority follow-ups.
+## Requirements
+
+- Linux terminal environment
+- Python 3.11 or newer
+- [`uv`](https://docs.astral.sh/uv/) for dependency management
+
+## Setup
+
+1. Install dependencies:
+
+```bash
+uv sync --extra dev
 ```
 
-## Recommended Output Formats
+2. Create a local environment file:
 
-### Daily Briefing
+```bash
+cp .env.example .env
+```
 
-- Top priorities
-- Schedule overview
-- Meeting preparation notes
-- Urgent messages or decisions
-- Follow-ups due today
-- Risks or conflicts
+3. Adjust `.env` values as needed:
 
-### Meeting Brief
+```dotenv
+EXEC_AGENT_ENV=development
+EXEC_AGENT_LOG_LEVEL=INFO
+EXEC_AGENT_DATA_DIR=~/.local/share/exec-agent
+```
 
-- Meeting objective
-- Attendees
-- Relevant background
-- Key talking points
-- Decisions needed
-- Questions to ask
-- Suggested follow-ups
+## Usage
 
-### Action Plan
+Run the placeholder chat command:
 
-- Action item
-- Owner
-- Deadline
-- Priority
-- Context
-- Status
+```bash
+uv run python -m exec_agent chat
+```
 
-## Safety and Governance
+You can also inspect the effective configuration:
 
-Because an executive assistant may handle sensitive business and personal information, the agent should follow strict safeguards:
+```bash
+uv run python -m exec_agent config
+```
 
-- Ask for confirmation before sending emails, messages, calendar invites, or external updates.
-- Clearly distinguish facts from assumptions.
-- Highlight missing information instead of inventing details.
-- Avoid exposing private context in generated messages unless explicitly approved.
-- Keep an audit trail of important recommendations and user-approved actions when possible.
+If the package is installed, the console script is available as:
 
-## Roadmap Ideas
+```bash
+uv run exec-agent chat
+```
 
-- Calendar integration
-- Email integration
-- Local document search
-- Contact and relationship memory
-- Meeting transcript ingestion
-- Task manager synchronization
-- Voice briefing support
-- Secure approval workflows
-- Preference learning for tone, formatting, and priorities
+## Testing
+
+Run the test suite with:
+
+```bash
+uv run pytest
+```
+
+## Development Notes
+
+The scaffold is intentionally small and focused. Future work can add agent orchestration, model providers, local memory, calendar/email integrations, retrieval, and approval workflows while preserving the CLI-first foundation.
 
 ## License
 

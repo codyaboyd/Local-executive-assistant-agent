@@ -11,6 +11,7 @@ from app.tools.pdf import ingest_pdf as ingest_pdf_file
 from app.tools.docx import ingest_docx as ingest_docx_file
 from app.tools.image import ask_image as ask_image_file
 from app.tools.image import describe_image as describe_image_file
+from app.tools import web_fastcrw
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 
@@ -24,10 +25,12 @@ memory_app = typer.Typer(help="Manage SQLite-backed long-term memories.")
 rag_app = typer.Typer(help="Search local vector RAG context.")
 ingest_app = typer.Typer(help="Ingest documents into local vector RAG context.")
 image_app = typer.Typer(help="Analyze images with local Hugging Face vision-language models.")
+web_app = typer.Typer(help="Use self-hosted FastCRW for web research.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(image_app, name="image")
+app.add_typer(web_app, name="web")
 
 
 @app.command()
@@ -58,6 +61,12 @@ def config() -> None:
     table.add_row("max_tokens", str(settings.max_tokens))
     table.add_row("temperature", str(settings.temperature))
     table.add_row("hitl", str(settings.hitl))
+    table.add_row("fastcrw_base_url", settings.fastcrw_base_url)
+    table.add_row("fastcrw_api_key", "set" if settings.fastcrw_api_key else "not set")
+    table.add_row("fastcrw_timeout_seconds", str(settings.fastcrw_timeout_seconds))
+    table.add_row("fastcrw_max_results", str(settings.fastcrw_max_results))
+    table.add_row("fastcrw_enable_scrape", str(settings.fastcrw_enable_scrape))
+    table.add_row("fastcrw_enable_crawl", str(settings.fastcrw_enable_crawl))
     console.print(table)
 
 
@@ -211,6 +220,69 @@ def image_ask(
     console.print(result.text)
     console.print(f"[green]Stored image answer in vector context for {path}.[/green]")
 
+
+
+def _handle_fastcrw_error(exc: Exception) -> None:
+    console.print(f"[red]{exc}[/red]")
+    raise typer.Exit(code=1) from exc
+
+
+@web_app.command("health")
+def web_health() -> None:
+    """Check the configured self-hosted FastCRW server."""
+
+    try:
+        result = web_fastcrw.health_check()
+    except web_fastcrw.FastCRWError as exc:
+        _handle_fastcrw_error(exc)
+    console.print(result)
+
+
+@web_app.command("search")
+def web_search(query: str, max_results: int = typer.Option(None, "--max-results", "-n", min=1, help="Maximum results to return.")) -> None:
+    """Search with the configured self-hosted FastCRW server."""
+
+    try:
+        results = web_fastcrw.search_web(query, max_results=max_results or get_settings().fastcrw_max_results)
+    except web_fastcrw.FastCRWError as exc:
+        _handle_fastcrw_error(exc)
+    table = Table(title=f"FastCRW Search: {query}")
+    table.add_column("Rank", style="cyan", no_wrap=True)
+    table.add_column("Title", style="white")
+    table.add_column("URL", style="magenta")
+    for index, result in enumerate(results, start=1):
+        table.add_row(str(index), str(result.get("title", "Untitled")), str(result.get("url", "")))
+    console.print(table)
+
+
+@web_app.command("scrape")
+def web_scrape(url: str) -> None:
+    """Scrape a URL with self-hosted FastCRW and store page content in vector DB."""
+
+    try:
+        page = web_fastcrw.scrape_url(url)
+    except web_fastcrw.FastCRWError as exc:
+        _handle_fastcrw_error(exc)
+    console.print(f"[green]Scraped and stored:[/green] {page.title} ({page.url})")
+
+
+@web_app.command("crawl")
+def web_crawl(url: str, limit: int = typer.Option(10, "--limit", min=1, help="Maximum pages to crawl.")) -> None:
+    """Crawl a URL with self-hosted FastCRW and store page content in vector DB."""
+
+    settings = get_settings()
+    if settings.hitl:
+        domain = web_fastcrw.target_domain(url)
+        edited_limit = typer.prompt("Max page limit", default=str(limit))
+        limit = int(edited_limit)
+        if not typer.confirm(f"Approve FastCRW crawl of {domain} with max {limit} pages?", default=False):
+            console.print("[yellow]Crawl rejected.[/yellow]")
+            raise typer.Exit(code=1)
+    try:
+        pages = web_fastcrw.crawl_url(url, limit=limit)
+    except web_fastcrw.FastCRWError as exc:
+        _handle_fastcrw_error(exc)
+    console.print(f"[green]Crawled and stored {len(pages)} pages from {url}.[/green]")
 
 def _normalize_device_option(device: str | None) -> str | None:
     if device is None:

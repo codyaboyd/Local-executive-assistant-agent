@@ -78,3 +78,50 @@ def test_terminal_chat_emits_progress_and_debug_transitions() -> None:
     assert "load_context" in rendered
     assert "call_llm" in rendered
     assert "ok" in rendered
+
+
+def test_persistent_terminal_chat_saves_session(tmp_path) -> None:
+    from io import StringIO
+    from rich.console import Console
+
+    from exec_agent.chat import TerminalChat
+    from exec_agent.sessions import ChatSessionStore
+
+    store = ChatSessionStore(tmp_path / "sessions.sqlite3")
+    chat = TerminalChat(
+        console=Console(file=StringIO()),
+        streamer=lambda prompt: ["saved"],
+        session_name="work",
+        session_store=store,
+    )
+    chat._handle_user_message("remember this")
+
+    persisted = store.get("work")
+    assert persisted is not None
+    assert [(message.role, message.content) for message in persisted.messages] == [
+        ("user", "remember this"),
+        ("assistant", "saved"),
+    ]
+    assert "User: remember this" in persisted.summary
+
+
+def test_terminal_chat_includes_session_summary_in_graph_prompt() -> None:
+    from io import StringIO
+    from rich.console import Console
+
+    from exec_agent.chat import TerminalChat
+
+    prompts: list[str] = []
+
+    def fake_streamer(prompt: str):
+        prompts.append(prompt)
+        yield "ok"
+
+    chat = TerminalChat(
+        console=Console(file=StringIO()),
+        streamer=fake_streamer,
+        session_summary="Earlier continuity note.",
+    )
+    chat._handle_user_message("next")
+
+    assert "Conversation summary for continuity:\nEarlier continuity note." in prompts[0]

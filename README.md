@@ -71,10 +71,24 @@ EXEC_AGENT_DATA_DIR=~/.local/share/exec-agent
 
 ## Usage
 
-Run the placeholder chat command:
+Run the chat command:
 
 ```bash
 uv run python -m exec_agent chat
+```
+
+Start or resume a persistent SQLite-backed chat session:
+
+```bash
+uv run python -m exec_agent chat --session work
+```
+
+Manage saved chat sessions:
+
+```bash
+uv run python -m exec_agent sessions list
+uv run python -m exec_agent sessions show work
+uv run python -m exec_agent sessions delete work
 ```
 
 Ingest a PDF into local RAG storage:

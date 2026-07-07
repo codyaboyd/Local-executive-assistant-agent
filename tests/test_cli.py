@@ -223,3 +223,44 @@ def test_chat_command_accepts_debug_flag() -> None:
 
     assert result.exit_code == 0
     assert "Debug graph progress enabled" in result.output
+
+
+def test_sessions_cli_list_show_delete(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EXEC_AGENT_DATA_DIR", str(tmp_path))
+    from exec_agent.config import get_settings
+    from exec_agent.chat import ChatSession
+    from exec_agent.sessions import ChatSessionStore
+
+    get_settings.cache_clear()
+    session = ChatSession()
+    session.add("user", "hello")
+    session.add("assistant", "hi")
+    ChatSessionStore().save_chat_session("work", session, "User greeted assistant")
+
+    list_result = runner.invoke(app, ["sessions", "list"])
+    assert list_result.exit_code == 0
+    assert "work" in list_result.output
+    assert "User greeted assistant" in list_result.output
+
+    show_result = runner.invoke(app, ["sessions", "show", "work"])
+    assert show_result.exit_code == 0
+    assert "Session:" in show_result.output
+    assert "User: hello" in show_result.output
+    assert "Assistant: hi" in show_result.output
+
+    delete_result = runner.invoke(app, ["sessions", "delete", "work"])
+    assert delete_result.exit_code == 0
+    assert "Deleted session work" in delete_result.output
+    get_settings.cache_clear()
+
+
+def test_chat_command_accepts_session_option(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EXEC_AGENT_DATA_DIR", str(tmp_path))
+    from exec_agent.config import get_settings
+
+    get_settings.cache_clear()
+    result = runner.invoke(app, ["chat", "--session", "work"])
+
+    assert result.exit_code == 0
+    assert "Session: work" in result.output
+    get_settings.cache_clear()

@@ -7,6 +7,7 @@ from rich.table import Table
 from exec_agent.config import get_settings
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
+from exec_agent.sessions import ChatSessionStore, PersistedChatSession
 from app.tools.pdf import ingest_pdf as ingest_pdf_file
 from app.tools.docx import ingest_docx as ingest_docx_file
 from app.tools.image import ask_image as ask_image_file
@@ -26,21 +27,92 @@ rag_app = typer.Typer(help="Search local vector RAG context.")
 ingest_app = typer.Typer(help="Ingest documents into local vector RAG context.")
 image_app = typer.Typer(help="Analyze images with local Hugging Face vision-language models.")
 web_app = typer.Typer(help="Use self-hosted FastCRW for web research.")
+sessions_app = typer.Typer(help="Manage SQLite-backed persistent chat sessions.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(image_app, name="image")
 app.add_typer(web_app, name="web")
+app.add_typer(sessions_app, name="sessions")
 
 
 @app.command()
 def chat(
     hitl: bool = typer.Option(False, "--hitl", help="Require human approval for tool calls and memory writes."),
     debug: bool = typer.Option(False, "--debug", help="Show graph node names and state transitions while streaming."),
+    session: str | None = typer.Option(None, "--session", help="Name of a persistent SQLite-backed chat session."),
 ) -> None:
     """Start the interactive terminal chat interface."""
 
-    TerminalChat(console=console, hitl=hitl or get_settings().hitl, debug=debug).run()
+    store = ChatSessionStore() if session else None
+    loaded_session = None
+    summary = ""
+    if store is not None and session is not None:
+        loaded_session, summary = store.load_chat_session(session)
+    TerminalChat(
+        console=console,
+        session=loaded_session,
+        session_name=session,
+        session_summary=summary,
+        session_store=store,
+        hitl=hitl or get_settings().hitl,
+        debug=debug,
+    ).run()
+
+
+def _sessions_store() -> ChatSessionStore:
+    return ChatSessionStore()
+
+
+def _render_sessions_table(sessions: list[PersistedChatSession]) -> Table:
+    table = Table(title="Chat Sessions")
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Messages", style="white", justify="right")
+    table.add_column("Summary", style="green")
+    table.add_column("Created", style="dim", width=20)
+    table.add_column("Updated", style="dim", width=20)
+    for session in sessions:
+        summary = session.summary.replace("\n", " ")
+        if len(summary) > 80:
+            summary = f"{summary[:77]}..."
+        table.add_row(session.name, str(len(session.messages)), summary, session.created_at[:19], session.updated_at[:19])
+    return table
+
+
+@sessions_app.command("list")
+def sessions_list() -> None:
+    """List persistent chat sessions."""
+
+    console.print(_render_sessions_table(_sessions_store().list()))
+
+
+@sessions_app.command("show")
+def sessions_show(name: str) -> None:
+    """Show a persistent chat session transcript and summary."""
+
+    session = _sessions_store().get(name)
+    if session is None:
+        console.print(f"[yellow]Session {name!r} not found.[/yellow]")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]Session:[/bold] {session.name}")
+    console.print(f"[bold]Created:[/bold] {session.created_at}")
+    console.print(f"[bold]Updated:[/bold] {session.updated_at}")
+    console.print("[bold]Summary:[/bold]")
+    console.print(session.summary or "[dim](empty)[/dim]")
+    console.print("[bold]Messages:[/bold]")
+    for message in session.messages:
+        console.print(f"[cyan]{message.role.title()}[/cyan]: {message.content}")
+
+
+@sessions_app.command("delete")
+def sessions_delete(name: str) -> None:
+    """Delete a persistent chat session."""
+
+    if _sessions_store().delete(name):
+        console.print(f"[green]Deleted session {name}.[/green]")
+    else:
+        console.print(f"[yellow]Session {name!r} not found.[/yellow]")
+        raise typer.Exit(code=1)
 
 
 @app.command()

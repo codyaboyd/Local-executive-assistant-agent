@@ -106,6 +106,9 @@ class TerminalChat:
         *,
         console: Console | None = None,
         session: ChatSession | None = None,
+        session_name: str | None = None,
+        session_summary: str = "",
+        session_store: object | None = None,
         streamer: TextStreamer = default_streamer,
         input_reader: Callable[[str], str] | None = None,
         hitl: bool | None = None,
@@ -113,6 +116,9 @@ class TerminalChat:
     ) -> None:
         self.console = console or Console()
         self.session = session or ChatSession()
+        self.session_name = session_name
+        self.session_summary = session_summary
+        self.session_store = session_store
         self.streamer = streamer
         self.graph = build_graph()
         self.input_reader = input_reader or (lambda prompt: Prompt.ask(prompt, console=self.console))
@@ -130,6 +136,7 @@ class TerminalChat:
                 "[bold green]Executive assistant chat[/bold green]\n"
                 "Type [cyan]/help[/cyan] for commands or [cyan]/exit[/cyan] to quit."
                 + ("\n[bold yellow]Human-in-the-loop approvals enabled.[/bold yellow]" if self.hitl else "")
+                + (f"\n[dim]Session: {self.session_name}[/dim]" if self.session_name else "")
                 + ("\n[dim]Debug graph progress enabled.[/dim]" if self.debug else ""),
                 title=settings.app_name,
                 border_style="green",
@@ -154,6 +161,8 @@ class TerminalChat:
                 continue
             if parsed.action is ChatAction.CLEAR:
                 self.session.clear()
+                self.session_summary = ""
+                self._persist_session()
                 self.console.clear()
                 self.console.print("[dim]Session cleared.[/dim]")
                 continue
@@ -206,6 +215,7 @@ class TerminalChat:
                 for message in self.session.messages
             ],
             "user_input": user_text,
+            "conversation_summary": self.session_summary,
             "streamer": streaming_printer,
             "hitl_enabled": self.hitl,
             "approval_handler": self._request_human_approval,
@@ -227,7 +237,14 @@ class TerminalChat:
             ChatMessage(role=message["role"], content=message["content"])
             for message in result.get("messages", [])
         ]
+        self.session_summary = str(result.get("conversation_summary", self.session_summary))
+        self._persist_session()
 
+    def _persist_session(self) -> None:
+        """Save a named persistent chat session, when configured."""
+
+        if self.session_name and self.session_store is not None:
+            self.session_store.save_chat_session(self.session_name, self.session, self.session_summary)
 
     def _request_human_approval(self, action: ProposedAction) -> ApprovalDecision:
         """Prompt the user to approve, reject, or edit a proposed side effect."""

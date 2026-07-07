@@ -74,3 +74,46 @@ def test_rag_search_cli(monkeypatch) -> None:
     assert "RAG Search: policy" in result.output
     assert "Travel policy requires receipts" in result.output
     assert "handbook.md" in result.output
+
+
+def test_ingest_pdf_cli(monkeypatch) -> None:
+    monkeypatch.setattr("exec_agent.cli.ingest_pdf_file", lambda path: 3)
+
+    result = runner.invoke(app, ["ingest", "pdf", "./file.pdf"])
+
+    assert result.exit_code == 0
+    assert "Ingested 3 PDF chunks from ./file.pdf" in result.output
+
+
+def test_ask_cli_uses_pdf_context_and_prints_references(monkeypatch) -> None:
+    from app.memory.vector_store import VectorSearchResult
+
+    captured = {}
+
+    class FakeVectorStore:
+        def similarity_search(self, query: str, k: int = 5):
+            assert query == "What is the travel policy?"
+            assert k == 2
+            return [
+                VectorSearchResult(
+                    "Travel policy requires receipts.",
+                    {"source": "handbook.pdf", "page": 7, "file_type": "pdf"},
+                    "doc-1",
+                    0.1,
+                ),
+                VectorSearchResult("Ignore non-pdf", {"source": "notes.md", "file_type": "md"}, "doc-2", 0.2),
+            ]
+
+    def fake_generate_text(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "Receipts are required (handbook.pdf p. 7)."
+
+    monkeypatch.setattr("exec_agent.cli.VectorStore", FakeVectorStore)
+    monkeypatch.setattr("exec_agent.cli.generate_text", fake_generate_text)
+
+    result = runner.invoke(app, ["ask", "What is the travel policy?", "--k", "2"])
+
+    assert result.exit_code == 0
+    assert "Receipts are required" in result.output
+    assert "References: handbook.pdf p. 7" in result.output
+    assert "Source: handbook.pdf, page 7" in captured["prompt"]

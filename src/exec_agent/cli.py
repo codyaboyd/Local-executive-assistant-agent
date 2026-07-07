@@ -7,6 +7,7 @@ from rich.table import Table
 from exec_agent.config import get_settings
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
+from app.tools.pdf import ingest_pdf as ingest_pdf_file
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 
@@ -18,8 +19,10 @@ app = typer.Typer(
 console = Console(width=140)
 memory_app = typer.Typer(help="Manage SQLite-backed long-term memories.")
 rag_app = typer.Typer(help="Search local vector RAG context.")
+ingest_app = typer.Typer(help="Ingest documents into local vector RAG context.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
+app.add_typer(ingest_app, name="ingest")
 
 
 @app.command()
@@ -141,3 +144,64 @@ def rag_search(query: str, k: int = typer.Option(5, "--k", "-k", min=1, help="Nu
 
     results = VectorStore().similarity_search(query, k=k)
     console.print(_render_vector_table(results, title=f"RAG Search: {query}"))
+
+
+@ingest_app.command("pdf")
+def ingest_pdf(path: str) -> None:
+    """Extract, chunk, and store a PDF in the local vector database."""
+
+    try:
+        chunk_count = ingest_pdf_file(path)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]Ingested {chunk_count} PDF chunks from {path}.[/green]")
+
+
+def _format_references(results: list[VectorSearchResult]) -> str:
+    refs: list[str] = []
+    seen: set[tuple[str, object]] = set()
+    for result in results:
+        source = str(result.metadata.get("source", "unknown"))
+        page = result.metadata.get("page")
+        key = (source, page)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(f"{source} p. {page}" if page else source)
+    return ", ".join(refs)
+
+
+def _build_pdf_qa_prompt(question: str, results: list[VectorSearchResult]) -> str:
+    context_lines: list[str] = []
+    for index, result in enumerate(results, start=1):
+        source = result.metadata.get("source", "unknown")
+        page = result.metadata.get("page", "unknown")
+        context_lines.append(f"[{index}] Source: {source}, page {page}\n{result.content}")
+    context = "\n\n".join(context_lines)
+    return (
+        "Answer the user's question using only the PDF context below. "
+        "When the context supports an answer, include source filename and page references. "
+        "If the context is insufficient, say you do not know based on the uploaded PDFs.\n\n"
+        f"PDF context:\n{context}\n\nQuestion: {question}\nAnswer:"
+    )
+
+
+@app.command("ask")
+def ask(question: str, k: int = typer.Option(5, "--k", "-k", min=1, help="Number of PDF chunks to retrieve.")) -> None:
+    """Ask a question about ingested PDFs."""
+
+    results = [
+        result
+        for result in VectorStore().similarity_search(question, k=k)
+        if result.metadata.get("file_type") == "pdf"
+    ]
+    if not results:
+        console.print("[yellow]No relevant PDF context found. Ingest PDFs with: python -m exec_agent ingest pdf ./file.pdf[/yellow]")
+        return
+
+    answer = generate_text(_build_pdf_qa_prompt(question, results)).strip()
+    console.print(answer)
+    references = _format_references(results)
+    if references:
+        console.print(f"[dim]References: {references}[/dim]")

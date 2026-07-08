@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 RuntimeProfile = Literal["cpu-safe", "gpu-fast", "private-offline", "research-online", "test-hitl"]
 DeviceMode = Literal["cpu", "cuda", "auto"]
+ModelPreset = Literal["default", "low_vram", "cpu_only", "quality", "coding", "research"]
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="EXEC_AGENT_LOG_LEVEL")
     data_dir: Path = Field(default=Path("~/.local/share/exec-agent"), validation_alias="EXEC_AGENT_DATA_DIR")
     model_id: str = Field(default="sshleifer/tiny-gpt2", validation_alias="EXEC_AGENT_MODEL_ID")
+    model_preset: ModelPreset = Field(default="default", validation_alias="EXEC_AGENT_MODEL_PRESET")
+    model_auto_pull: bool = Field(default=False, validation_alias="EXEC_AGENT_MODEL_AUTO_PULL")
+    max_vram_gb: int = Field(default=16, ge=1, validation_alias="EXEC_AGENT_MAX_VRAM_GB")
+    general_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_GENERAL_MODEL_ID")
+    coding_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_CODING_MODEL_ID")
+    summary_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_SUMMARY_MODEL_ID")
+    docqa_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_DOCQA_MODEL_ID")
+    research_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_RESEARCH_MODEL_ID")
+    tool_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_TOOL_MODEL_ID")
+    embedding_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_EMBEDDING_MODEL_ID")
+    vision_model_id: str = Field(default="auto", validation_alias="EXEC_AGENT_VISION_MODEL_ID")
     image_caption_model_id: str = Field(default="Salesforce/blip-image-captioning-base", validation_alias="EXEC_AGENT_IMAGE_CAPTION_MODEL_ID")
     image_qa_model_id: str = Field(default="dandelin/vilt-b32-finetuned-vqa", validation_alias="EXEC_AGENT_IMAGE_QA_MODEL_ID")
     device: DeviceMode = Field(default="auto", validation_alias="EXEC_AGENT_DEVICE")
@@ -149,6 +161,8 @@ class Settings(BaseSettings):
             self.log_level = profile.log_level
         if profile_was_selected or "fastcrw_crawl_requires_approval" not in self.model_fields_set:
             self.fastcrw_crawl_requires_approval = profile.fastcrw_crawl_requires_approval
+        if self.model_preset == "cpu_only":
+            self.device = "cpu"
         if self.local_only:
             self.web_enabled = False
             self.fastcrw_enabled = False

@@ -184,12 +184,11 @@ uv run exec-agent models benchmark
 
 ### Recommended models by GPU size
 
-| GPU VRAM | Preset | Recommended roles/models | Notes |
-| --- | --- | --- | --- |
-| 4GB | `low_vram` or `cpu_only` | Qwen/Qwen2.5-1.5B-Instruct, Qwen/Qwen2.5-Coder-1.5B-Instruct, sentence-transformers/all-MiniLM-L6-v2 | Prefer CPU-friendly or quantized runtimes; keep context and max tokens small. |
-| 6GB | `low_vram` | Qwen/Qwen2.5-1.5B-Instruct for general/research/doc QA; Qwen/Qwen2.5-Coder-1.5B-Instruct for coding | Good for light executive workflows without downloading huge models. |
-| 8GB | `default` | Qwen/Qwen2.5-3B-Instruct, Qwen/Qwen2.5-Coder-3B-Instruct, microsoft/Phi-3.5-mini-instruct | Best balance for instruction following, grounded reasoning, and specialist switching. |
-| 12GB | `default` or `research` | Qwen/Qwen2.5-3B-Instruct, Phi-3.5-mini-instruct, Hermes-3-Llama-3.2-3B | Use research preset when web synthesis and tool-style prompts matter most. |
-| 16GB | `quality` | Qwen/Qwen2.5-7B-Instruct for general reasoning, Qwen/Qwen2.5-Coder-3B-Instruct for coding | Higher quality while staying inside the consumer-GPU target; monitor VRAM before increasing context. |
+| Hardware budget | Preset | General reasoning | Coding | Embeddings | Vision | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| CPU / low VRAM | `cpu_only` | Qwen/Qwen2.5-1.5B-Instruct or TinyLlama/TinyLlama-1.1B-Chat-v1.0 fallback | Qwen/Qwen2.5-Coder-1.5B-Instruct | sentence-transformers/all-MiniLM-L6-v2 | Salesforce/blip-image-captioning-base | Prefer CPU-friendly models, small context windows, and conservative max token settings. |
+| 8GB VRAM | `default` or `low_vram` | Qwen/Qwen2.5-3B-Instruct, with Phi-3.5 Mini and Gemma 2 2B available as lightweight alternatives | Qwen/Qwen2.5-Coder-3B-Instruct | BAAI/bge-small-en-v1.5 | Qwen/Qwen2-VL-2B-Instruct when it fits; BLIP fallback otherwise | Best small-GPU balance for local executive workflows. |
+| 12GB VRAM | `default` | Qwen/Qwen2.5-7B-Instruct in a 4-bit/quantized runtime | Qwen/Qwen2.5-Coder-3B-Instruct | BAAI/bge-small-en-v1.5 | Qwen/Qwen2-VL-2B-Instruct | Use 7B reasoning models when quantized; keep coding on 3B unless using the 16GB/coding preset. |
+| 16GB VRAM | `quality` or `coding` | Qwen/Qwen2.5-7B-Instruct or Mistral-7B-Instruct quantized | Qwen/Qwen2.5-Coder-7B-Instruct quantized | BAAI/bge-base-en-v1.5 for quality, BAAI/bge-small-en-v1.5 by default | Qwen/Qwen2-VL-2B-Instruct | Strongest local tier in the curated registry while staying inside the consumer-GPU target. |
 
-CPU-only machines should use `EXEC_AGENT_MODEL_PRESET=cpu_only` and `EXEC_AGENT_DEVICE=cpu`. Embeddings and vision defaults remain small and CPU-capable, but image tasks may be slower without CUDA.
+Summarization and document QA use the active general reasoning tier by default, and `EXEC_AGENT_SUMMARY_MODEL_ID` can point to a specialized summarization model when a workflow needs one. Tool calling prefers the strongest instruction-following Qwen model that fits the active preset and VRAM budget.

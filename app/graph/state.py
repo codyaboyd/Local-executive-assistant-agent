@@ -15,6 +15,8 @@ class AssistantMessage(TypedDict):
 
 IntentName = Literal[
     "general_chat",
+    "coding_question",
+    "summarization",
     "document_question",
     "web_research",
     "image_question",
@@ -72,5 +74,7 @@ class AssistantState(TypedDict, total=False):
     intent_reason: str
     tool_name: str
     tool_call_log: list[dict[str, Any]]
+    model_role: str
+    secondary_model_roles: list[str]
     debug: bool
     progress_callback: Callable[[dict[str, Any]], None]

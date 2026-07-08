@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 import logging
 from typing import Any
 
+from app.models.registry import ModelRole
 from exec_agent.models.llm import generate_text, stream_text
 from exec_agent.safety import UserFacingError
 
@@ -16,7 +17,7 @@ from app.tools import web_fastcrw
 
 logger = logging.getLogger(__name__)
 
-TextStreamer = Callable[[str], Iterable[str]]
+TextStreamer = Callable[..., Iterable[str]]
 
 
 def _safe_tool_error(tool_name: str, exc: Exception) -> AssistantState:
@@ -121,6 +122,8 @@ def classify_intent(state: AssistantState) -> AssistantState:
 
     if not lowered.strip():
         intent, confidence, reason = "uncertain", 0.0, "No user input was provided."
+    elif _looks_like_coding_question(lowered):
+        intent, confidence, reason = "coding_question", 0.86, "User asked for coding, debugging, or software implementation help."
     elif any(
         term in lowered for term in ("remember", "save this", "store this", "update memory", "forget")
     ):
@@ -139,13 +142,59 @@ def classify_intent(state: AssistantState) -> AssistantState:
         term in lowered for term in ("document", "pdf", "docx", "file", "handbook", "policy", "uploaded")
     ):
         intent, confidence, reason = "document_question", 0.82, "User asked about local document context."
+    elif _looks_like_summary_request(lowered):
+        intent, confidence, reason = "summarization", 0.84, "User asked for a summary or synthesis."
     elif (
         any(term in lowered for term in ("maybe", "not sure", "could be", "unclear"))
         and len(lowered.split()) < 6
     ):
         intent, confidence, reason = "uncertain", 0.35, "Input is too ambiguous to choose a specialized tool."
 
-    return {"intent": intent, "intent_confidence": confidence, "intent_reason": reason}
+    role_updates = _model_role_updates(intent, state.get("model_role"))
+    return {"intent": intent, "intent_confidence": confidence, "intent_reason": reason, **role_updates}
+
+
+def _looks_like_coding_question(lowered: str) -> bool:
+    coding_terms = (
+        "code", "coding", "debug", "bug", "function", "class", "api", "stack trace",
+        "python", "javascript", "typescript", "java", "rust", "go ", "sql", "html", "css",
+        "implement", "refactor", "unit test", "pytest", "compiler", "exception",
+    )
+    return any(term in lowered for term in coding_terms)
+
+
+def _looks_like_summary_request(lowered: str) -> bool:
+    summary_terms = ("summarize", "summary", "tl;dr", "recap", "brief me", "briefing", "digest")
+    return any(term in lowered for term in summary_terms)
+
+
+def _model_role_updates(intent: IntentName, previous_role: str | None = None) -> AssistantState:
+    role_by_intent = {
+        "general_chat": ModelRole.GENERAL_REASONING.value,
+        "coding_question": ModelRole.CODING.value,
+        "summarization": ModelRole.SUMMARIZATION.value,
+        "document_question": ModelRole.DOCUMENT_QA.value,
+        "web_research": ModelRole.WEB_RESEARCH.value,
+        "image_question": ModelRole.VISION.value,
+        "memory_update": ModelRole.TOOL_CALLING.value,
+        "task_planning": ModelRole.TOOL_CALLING.value,
+        "uncertain": ModelRole.GENERAL_REASONING.value,
+    }
+    model_role = role_by_intent.get(intent, ModelRole.GENERAL_REASONING.value)
+    updates: AssistantState = {"model_role": model_role}
+    if intent == "image_question":
+        updates["secondary_model_roles"] = [ModelRole.GENERAL_REASONING.value]
+    if previous_role and previous_role != model_role:
+        logger.debug(
+            "Switching model role",
+            extra={"event": "model_role_switch", "from_role": previous_role, "to_role": model_role, "intent": intent},
+        )
+    else:
+        logger.debug(
+            "Selected model role",
+            extra={"event": "model_role_selected", "to_role": model_role, "intent": intent},
+        )
+    return updates
 
 
 def _tool_response_prompt(state: AssistantState, tool_label: str, extra_context: str = "") -> str:
@@ -163,6 +212,21 @@ def general_chat_tool(state: AssistantState) -> AssistantState:
     updates = _record_tool_call(state, "general_chat.respond", "general_chat")
     return updates
 
+
+def coding_question_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: coding_question_tool")
+    _emit_progress(state, "tool", "Using tool: coding assistant", node="coding_question_tool")
+    return _record_tool_call(state, "coding.assistant", "coding_question")
+
+
+def summarization_tool(state: AssistantState) -> AssistantState:
+    logger.info("Running graph node: summarization_tool")
+    _emit_progress(state, "tool", "Using tool: summarizer", node="summarization_tool")
+    updates = _record_tool_call(state, "summary.create", "summarization")
+    updates["prompt"] = _tool_response_prompt(
+        state, "summarization", "Summarize the provided conversation or context accurately and concisely."
+    )
+    return updates
 
 def document_question_tool(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: document_question_tool")
@@ -251,6 +315,7 @@ def fallback_tool(state: AssistantState) -> AssistantState:
         state, "fallback.general_chat", "uncertain", {"reason": state.get("intent_reason", "uncertain")}
     )
     updates["intent"] = "general_chat"
+    updates["model_role"] = ModelRole.GENERAL_REASONING.value
     updates["prompt"] = _tool_response_prompt(
         state,
         "fallback",
@@ -263,11 +328,11 @@ def _get_streamer(state: AssistantState) -> TextStreamer:
     if streamer is not None:
         return streamer
 
-    def default_streamer(prompt: str) -> Iterable[str]:
+    def default_streamer(prompt: str, role: str = ModelRole.GENERAL_REASONING.value) -> Iterable[str]:
         try:
-            yield from stream_text(prompt)
+            yield from stream_text(prompt, role=role)
         except TypeError:
-            yield generate_text(prompt)
+            yield generate_text(prompt, role=role)
 
     return default_streamer
 
@@ -409,8 +474,14 @@ def call_llm(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: call_llm")
     _emit_progress(state, "generation", "Generating answer", node="call_llm")
     prompt = state.get("prompt", "")
+    model_role = state.get("model_role", ModelRole.GENERAL_REASONING.value)
+    logger.debug("Calling LLM with model role", extra={"event": "model_role_call", "model_role": model_role})
     try:
-        response_chunks = list(_get_streamer(state)(prompt))
+        streamer = _get_streamer(state)
+        try:
+            response_chunks = list(streamer(prompt, model_role))
+        except TypeError:
+            response_chunks = list(streamer(prompt))
         response = "".join(response_chunks)
     except Exception as exc:  # noqa: BLE001 - model boundary must produce a clear user-facing error.
         logger.exception("Model generation failed", extra={"event": "model_error", "node": "call_llm"})
@@ -473,6 +544,8 @@ def _summarize_messages(messages: list[AssistantMessage], *, max_chars: int = 12
 
 # Ensure every graph tool node has a protective error boundary.
 general_chat_tool = _guard_tool("general_chat.respond", general_chat_tool)
+coding_question_tool = _guard_tool("coding.assistant", coding_question_tool)
+summarization_tool = _guard_tool("summary.create", summarization_tool)
 document_question_tool = _guard_tool("documents.vector_search", document_question_tool)
 web_research_tool = _guard_tool("fastcrw.web_research", web_research_tool)
 image_question_tool = _guard_tool("image.analyze", image_question_tool)

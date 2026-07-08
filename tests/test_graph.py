@@ -1,5 +1,5 @@
 from app.graph.builder import build_graph
-from app.graph.nodes import call_llm, load_context, save_context
+from app.graph.nodes import call_llm, classify_intent, load_context, save_context
 
 
 def test_graph_shape_and_state_memory() -> None:
@@ -139,6 +139,8 @@ def test_web_context_requires_fastcrw_enabled(monkeypatch) -> None:
 
 def test_graph_routes_each_intent_to_tool_node() -> None:
     cases = [
+        ("Debug this Python function", "coding_question", "coding.assistant"),
+        ("Summarize these notes", "summarization", "summary.create"),
         ("What does the travel policy document say?", "document_question", "documents.vector_search"),
         ("Search the web for the latest market news", "web_research", "fastcrw.web_research"),
         ("What is in this screenshot?", "image_question", "image.analyze"),
@@ -160,3 +162,43 @@ def test_uncertain_intent_uses_observable_fallback(capsys) -> None:
     assert result["intent"] == "general_chat"
     assert result["tool_call_log"][-1]["tool"] == "fallback.general_chat"
     assert "TOOL CALL: fallback.general_chat intent=uncertain" in capsys.readouterr().out
+
+
+def test_tool_router_selects_model_roles() -> None:
+    graph = build_graph()
+    cases = [
+        ("Debug this Python function", "coding"),
+        ("What does this PDF say?", "document_qa"),
+        ("Search the web for current news", "web_research"),
+        ("Summarize these notes", "summarization"),
+        ("What is in this image?", "vision"),
+        ("Plan the tools needed for this workflow", "tool_calling"),
+        ("Hello there", "general_reasoning"),
+    ]
+
+    for user_input, expected_role in cases:
+        seen_roles: list[str] = []
+
+        def fake_streamer(prompt: str, role: str):
+            seen_roles.append(role)
+            yield "ok"
+
+        result = graph.invoke({"messages": [], "user_input": user_input, "streamer": fake_streamer})
+
+        assert result["model_role"] == expected_role
+        assert seen_roles == [expected_role]
+
+
+def test_image_router_records_reasoning_secondary_role() -> None:
+    result = build_graph().invoke({"messages": [], "user_input": "What is in this image?", "streamer": lambda prompt: ["ok"]})
+
+    assert result["model_role"] == "vision"
+    assert result["secondary_model_roles"] == ["general_reasoning"]
+
+
+def test_model_role_switch_logs_at_debug(caplog) -> None:
+    caplog.set_level("DEBUG")
+
+    classify_intent({"user_input": "Debug this Python function", "model_role": "general_reasoning"})
+
+    assert "Switching model role" in caplog.text

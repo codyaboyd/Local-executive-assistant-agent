@@ -135,6 +135,189 @@ If the package is installed, the console script is available as:
 uv run exec-agent chat
 ```
 
+## Local Linux Installation
+
+The package exposes a console script named `exec-agent` from `pyproject.toml`, so a local install makes the assistant available without typing `python -m exec_agent`.
+
+1. Install Linux prerequisites. On Debian or Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv python3-pip git build-essential
+```
+
+2. Install `uv` if it is not already available:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+exec "$SHELL"
+uv --version
+```
+
+3. Clone the project and enter the repository:
+
+```bash
+git clone <repository-url>
+cd Local-executive-assistant-agent
+```
+
+4. Create local configuration:
+
+```bash
+cp .env.example .env
+```
+
+5. Install the project in editable mode with development tools:
+
+```bash
+uv sync --extra dev
+uv pip install -e .
+```
+
+6. Verify that the installed command is on your PATH:
+
+```bash
+exec-agent --help
+```
+
+If your shell cannot find `exec-agent`, run it through uv from the repository (`uv run exec-agent --help`) or ensure the active virtual environment's `bin` directory is on your PATH.
+
+### Installed Command Examples
+
+After installation, these commands are available directly from your shell:
+
+```bash
+exec-agent chat
+exec-agent ingest pdf ./file.pdf
+exec-agent ask "question"
+exec-agent web search "query"
+```
+
+Additional useful commands:
+
+```bash
+exec-agent ingest docx ./file.docx
+exec-agent rag search "topic"
+exec-agent sessions list
+exec-agent config
+```
+
+## GPU Setup Notes
+
+GPU support is optional. The assistant can run on CPU, but local text, embedding, and vision models are much faster with a supported NVIDIA GPU.
+
+- Install a recent NVIDIA driver on Linux and confirm the GPU is visible:
+
+```bash
+nvidia-smi
+```
+
+- Install or sync dependencies after the driver is available so PyTorch can detect CUDA correctly:
+
+```bash
+uv sync --extra dev
+uv run python -c "import torch; print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+- Use the GPU-oriented runtime profile when CUDA is available:
+
+```bash
+exec-agent profile use gpu-fast
+exec-agent config
+```
+
+- Image commands accept an explicit device flag:
+
+```bash
+exec-agent image describe ./image.png --device cuda
+exec-agent image ask ./image.png "what is in this image?" --device cuda
+```
+
+- If CUDA is not available, use the CPU-safe profile and `--device cpu` for image commands:
+
+```bash
+exec-agent profile use cpu-safe
+exec-agent image describe ./image.png --device cpu
+```
+
+## Troubleshooting
+
+### `exec-agent: command not found`
+
+Install the package in the active environment or run it through uv:
+
+```bash
+uv pip install -e .
+uv run exec-agent --help
+```
+
+If you installed into a virtual environment, activate it before running `exec-agent`.
+
+### Import errors after installation
+
+Refresh the environment and reinstall the editable package:
+
+```bash
+uv sync --extra dev
+uv pip install -e .
+```
+
+Then verify imports with:
+
+```bash
+uv run python -c "import exec_agent; print(exec_agent.__version__)"
+```
+
+### PDF or DOCX ingestion fails
+
+Check that the file exists, is readable, and has a supported extension. Then rerun with an explicit path:
+
+```bash
+exec-agent ingest pdf ./file.pdf
+exec-agent ingest docx ./file.docx
+```
+
+### No document context found for `ask`
+
+Ingest documents before asking questions, and make sure you are using the same `EXEC_AGENT_DATA_DIR` and `EXEC_AGENT_VECTOR_DB_PATH` as the ingest step:
+
+```bash
+exec-agent ingest pdf ./file.pdf
+exec-agent ask "question"
+exec-agent config
+```
+
+### Web search cannot connect to FastCRW
+
+Start the local FastCRW service and check health:
+
+```bash
+make fastcrw-up
+exec-agent web health
+exec-agent web search "query"
+```
+
+Confirm `FASTCRW_BASE_URL`, `FASTCRW_PORT`, and `FASTCRW_API_PREFIX` in `.env` if the health check still fails.
+
+### CUDA/GPU is not detected
+
+Confirm the NVIDIA driver works, then check PyTorch CUDA detection:
+
+```bash
+nvidia-smi
+uv run python -c "import torch; print(torch.cuda.is_available())"
+```
+
+If CUDA is unavailable, switch to CPU mode:
+
+```bash
+exec-agent profile use cpu-safe
+```
+
+### Local model downloads are slow or fail
+
+The first run may download Hugging Face models. Confirm network access and available disk space, or configure a local Hugging Face cache before retrying.
+
 ## Testing
 
 Run the test suite with:

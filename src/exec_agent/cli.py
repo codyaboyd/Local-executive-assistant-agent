@@ -1,12 +1,14 @@
 """Command-line interface for the executive assistant."""
 
 from pathlib import Path
+import inspect
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from app.models.registry import ModelRole, REGISTRY, benchmark_selection, pull_model, select_model
 from exec_agent.config import RUNTIME_PROFILES, get_settings
 from exec_agent.logging import configure_logging
 from exec_agent.safety import UserFacingError, validate_local_file
@@ -38,6 +40,7 @@ sessions_app = typer.Typer(help="Manage SQLite-backed persistent chat sessions."
 task_app = typer.Typer(help="Run executive-assistant task workflows without modifying external systems.")
 profile_app = typer.Typer(help="List and activate runtime profiles.")
 eval_app = typer.Typer(help="Run offline testing and evaluation tasks.")
+models_app = typer.Typer(help="Inspect, pull, benchmark, and pin role-specific models.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
@@ -47,6 +50,104 @@ app.add_typer(sessions_app, name="sessions")
 app.add_typer(task_app, name="task")
 app.add_typer(profile_app, name="profile")
 app.add_typer(eval_app, name="eval")
+app.add_typer(models_app, name="models")
+
+
+@models_app.command("list")
+def models_list() -> None:
+    """List curated open-source models by role."""
+
+    settings = get_settings()
+    table = Table(title="Curated Model Registry")
+    for column in ["Selected", "Role", "Model", "VRAM", "CPU", "Quant", "Preset", "Strengths"]:
+        table.add_column(column)
+    selected = {role: select_model(role, settings).model_id for role in ModelRole}
+    for spec in REGISTRY:
+        table.add_row("*" if selected.get(spec.role) == spec.model_id else "", spec.role.value, spec.model_id, f"{spec.recommended_vram_gb:g}GB", str(spec.cpu_friendly), spec.quantization, ",".join(spec.default_presets), ", ".join(spec.strengths))
+    console.print(table)
+
+
+@models_app.command("status")
+def models_status() -> None:
+    """Show effective role-to-model mapping and preset budget."""
+
+    settings = get_settings()
+    table = Table(title="Model Status")
+    table.add_column("Role", style="cyan")
+    table.add_column("Model")
+    table.add_column("Backend")
+    table.add_column("Budget")
+    table.add_column("Auto Pull")
+    for role in ModelRole:
+        spec = select_model(role, settings)
+        table.add_row(role.value, spec.model_id, spec.backend, f"preset={settings.model_preset}, max_vram={settings.max_vram_gb}GB", str(settings.model_auto_pull))
+    console.print(table)
+
+
+def _warn_if_oversized(spec) -> None:
+    if spec.recommended_vram_gb > get_settings().max_vram_gb:
+        console.print(f"[yellow]Warning: {spec.model_id} recommends {spec.recommended_vram_gb:g}GB VRAM, above configured budget {get_settings().max_vram_gb}GB.[/yellow]")
+
+
+@models_app.command("pull-defaults")
+def models_pull_defaults() -> None:
+    """Pull recommended default models for the active preset."""
+
+    seen: set[str] = set()
+    for role in ModelRole:
+        spec = select_model(role)
+        if spec.model_id in seen:
+            continue
+        seen.add(spec.model_id)
+        _warn_if_oversized(spec)
+        console.print(f"Pulling {role.value}: {spec.model_id}")
+        console.print(pull_model(spec.model_id))
+
+
+@models_app.command("pull")
+def models_pull(role: str = typer.Option(..., "--role", help="Model role to pull.")) -> None:
+    """Pull the selected model for a role."""
+
+    spec = select_model(ModelRole(role))
+    _warn_if_oversized(spec)
+    console.print(pull_model(spec.model_id))
+
+
+@models_app.command("set-role")
+def models_set_role(role: str, model_id: str) -> None:
+    """Persist a role-specific model override in .env."""
+
+    env_names = {
+        ModelRole.GENERAL_REASONING: "EXEC_AGENT_GENERAL_MODEL_ID",
+        ModelRole.CODING: "EXEC_AGENT_CODING_MODEL_ID",
+        ModelRole.SUMMARIZATION: "EXEC_AGENT_SUMMARY_MODEL_ID",
+        ModelRole.DOCUMENT_QA: "EXEC_AGENT_DOCQA_MODEL_ID",
+        ModelRole.WEB_RESEARCH: "EXEC_AGENT_RESEARCH_MODEL_ID",
+        ModelRole.TOOL_CALLING: "EXEC_AGENT_TOOL_MODEL_ID",
+        ModelRole.EMBEDDINGS: "EXEC_AGENT_EMBEDDING_MODEL_ID",
+        ModelRole.VISION: "EXEC_AGENT_VISION_MODEL_ID",
+    }
+    key = env_names[ModelRole(role)]
+    env_path = _env_file_path()
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    rendered = [line for line in lines if not line.startswith(f"{key}=")]
+    rendered.append(f"{key}={model_id}")
+    env_path.write_text("\n".join(rendered).rstrip() + "\n", encoding="utf-8")
+    get_settings.cache_clear()
+    console.print(f"[green]Set {role} to {model_id}.[/green]")
+
+
+@models_app.command("benchmark")
+def models_benchmark() -> None:
+    """Benchmark role model selection without heavyweight generation."""
+
+    table = Table(title="Model Selection Benchmark")
+    table.add_column("Role")
+    table.add_column("Model")
+    table.add_column("Selection ms")
+    for row in benchmark_selection():
+        table.add_row(row["role"], row["model_id"], row["selection_ms"])
+    console.print(table)
 
 
 @eval_app.command("run")
@@ -148,9 +249,17 @@ def _render_workflow_result(title: str, body: str) -> None:
     console.print(Panel(body.strip() or "[dim](no output)[/dim]", title=title, border_style="cyan", expand=False))
 
 
-def _generate_workflow(title: str, prompt: str) -> None:
+def _generate_text_for_role(prompt: str, role: str) -> str:
+    """Call generate_text with role support while preserving test doubles with the old signature."""
+
+    if "role" in inspect.signature(generate_text).parameters:
+        return generate_text(prompt, role=role)
+    return generate_text(prompt)
+
+
+def _generate_workflow(title: str, prompt: str, role: str = ModelRole.GENERAL_REASONING.value) -> None:
     try:
-        output = generate_text(prompt).strip()
+        output = _generate_text_for_role(prompt, role).strip()
     except Exception as exc:  # noqa: BLE001 - CLI boundary returns clear user-facing errors.
         console.print(f"[red]Could not generate workflow output safely: {exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -194,6 +303,7 @@ def task_summarize_notes(
         "Notes Summary",
         "Summarize these notes for an executive. Return clean terminal output with sections: Key Points, Decisions, Risks, and Next Steps.\n\n"
         f"Notes:\n{notes}\n",
+        role=ModelRole.SUMMARIZATION.value,
     )
 
 
@@ -238,6 +348,7 @@ def task_research_topic(topic: str, max_results: int = typer.Option(5, "--max-re
         "Topic Research",
         "Prepare a concise executive research memo using the web search results below. Include Overview, Key Findings, Watchouts, and Sources.\n\n"
         f"Topic: {topic}\n\nWeb results:\n{web_context}",
+        role=ModelRole.WEB_RESEARCH.value,
     )
 
 
@@ -253,6 +364,7 @@ def task_action_items(
         "Action Items",
         "Extract action items from this document. Return a terminal-friendly table-like list with Owner, Action, Due Date, Priority, and Evidence. Use 'Unassigned' or 'Not specified' where missing.\n\n"
         f"Document:\n{document}",
+        role=ModelRole.DOCUMENT_QA.value,
     )
 
 
@@ -273,6 +385,7 @@ def task_daily_briefing(
         "Daily Briefing",
         "Create a daily executive briefing from memory, local documents, and web results. Include Priorities, Schedule/Context, Decisions Needed, Risks, Opportunities, and Source Notes. Do not claim to update calendars, send messages, or modify external systems.\n\n"
         f"Focus: {focus}\n\nMemory:\n{memory_context}\n\nDocuments:\n{docs_context}\n\nWeb:\n{web_context}",
+        role=ModelRole.WEB_RESEARCH.value,
     )
 
 
@@ -369,6 +482,17 @@ def config() -> None:
     table.add_row("data_dir", str(settings.expanded_data_dir))
     table.add_row("vector_db_path", str(settings.expanded_vector_db_path))
     table.add_row("model_id", settings.model_id)
+    table.add_row("model_preset", settings.model_preset)
+    table.add_row("model_auto_pull", str(settings.model_auto_pull))
+    table.add_row("max_vram_gb", str(settings.max_vram_gb))
+    table.add_row("general_model_id", settings.general_model_id)
+    table.add_row("coding_model_id", settings.coding_model_id)
+    table.add_row("summary_model_id", settings.summary_model_id)
+    table.add_row("docqa_model_id", settings.docqa_model_id)
+    table.add_row("research_model_id", settings.research_model_id)
+    table.add_row("tool_model_id", settings.tool_model_id)
+    table.add_row("embedding_model_id", settings.embedding_model_id)
+    table.add_row("vision_model_id", settings.vision_model_id)
     table.add_row("image_caption_model_id", settings.image_caption_model_id)
     table.add_row("image_qa_model_id", settings.image_qa_model_id)
     table.add_row("device", settings.device)
@@ -673,7 +797,7 @@ def ask(question: str, k: int = typer.Option(5, "--k", "-k", min=1, help="Number
         console.print("[yellow]No relevant document context found. Ingest documents with: python -m exec_agent ingest pdf ./file.pdf or python -m exec_agent ingest docx ./file.docx[/yellow]")
         return
 
-    answer = generate_text(_build_document_qa_prompt(question, results)).strip()
+    answer = _generate_text_for_role(_build_document_qa_prompt(question, results), ModelRole.DOCUMENT_QA.value).strip()
     console.print(answer)
     references = _format_references(results)
     if references:

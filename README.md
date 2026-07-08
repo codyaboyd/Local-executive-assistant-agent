@@ -148,3 +148,48 @@ python scripts/dev_make.py eval
 uv run exec-agent --help
 uv run exec-agent config
 ```
+
+## Small-GPU model registry and role switching
+
+The assistant includes a curated open-source model registry for consumer GPUs with 16GB VRAM or less, plus CPU-only mode. Configure the selector with:
+
+```bash
+EXEC_AGENT_MODEL_PRESET=default        # default|low_vram|cpu_only|quality|coding|research
+EXEC_AGENT_MODEL_AUTO_PULL=false       # true pulls selected defaults during setup workflows
+EXEC_AGENT_MAX_VRAM_GB=16
+EXEC_AGENT_GENERAL_MODEL_ID=auto
+EXEC_AGENT_CODING_MODEL_ID=auto
+EXEC_AGENT_SUMMARY_MODEL_ID=auto
+EXEC_AGENT_DOCQA_MODEL_ID=auto
+EXEC_AGENT_RESEARCH_MODEL_ID=auto
+EXEC_AGENT_TOOL_MODEL_ID=auto
+EXEC_AGENT_EMBEDDING_MODEL_ID=auto
+EXEC_AGENT_VISION_MODEL_ID=auto
+```
+
+Use `auto` or `default` to let the registry choose a role-specific model. Set any role variable to a Hugging Face model ID to override it. Runtime workflows pass a task role to the model adapter, so summarization, document Q&A, web research, coding, tool-calling, embeddings, and vision can use specialist defaults instead of one global model.
+
+Model management commands:
+
+```bash
+uv run exec-agent models list
+uv run exec-agent models status
+uv run exec-agent models pull-defaults
+uv run exec-agent models pull --role coding
+uv run exec-agent models set-role coding Qwen/Qwen2.5-Coder-3B-Instruct
+uv run exec-agent models benchmark
+```
+
+`pull-defaults` only pulls the registry selections for the active preset and de-duplicates shared models. The CLI warns when a selected model recommends more VRAM than `EXEC_AGENT_MAX_VRAM_GB`; avoid pulling models above your hardware budget unless you intentionally plan to run them on CPU or another backend. The loader degrades gracefully: if the selected GPU model cannot load, it retries CPU for that model, then smaller role-compatible models, then CPU-friendly fallbacks.
+
+### Recommended models by GPU size
+
+| GPU VRAM | Preset | Recommended roles/models | Notes |
+| --- | --- | --- | --- |
+| 4GB | `low_vram` or `cpu_only` | Qwen/Qwen2.5-1.5B-Instruct, Qwen/Qwen2.5-Coder-1.5B-Instruct, sentence-transformers/all-MiniLM-L6-v2 | Prefer CPU-friendly or quantized runtimes; keep context and max tokens small. |
+| 6GB | `low_vram` | Qwen/Qwen2.5-1.5B-Instruct for general/research/doc QA; Qwen/Qwen2.5-Coder-1.5B-Instruct for coding | Good for light executive workflows without downloading huge models. |
+| 8GB | `default` | Qwen/Qwen2.5-3B-Instruct, Qwen/Qwen2.5-Coder-3B-Instruct, microsoft/Phi-3.5-mini-instruct | Best balance for instruction following, grounded reasoning, and specialist switching. |
+| 12GB | `default` or `research` | Qwen/Qwen2.5-3B-Instruct, Phi-3.5-mini-instruct, Hermes-3-Llama-3.2-3B | Use research preset when web synthesis and tool-style prompts matter most. |
+| 16GB | `quality` | Qwen/Qwen2.5-7B-Instruct for general reasoning, Qwen/Qwen2.5-Coder-3B-Instruct for coding | Higher quality while staying inside the consumer-GPU target; monitor VRAM before increasing context. |
+
+CPU-only machines should use `EXEC_AGENT_MODEL_PRESET=cpu_only` and `EXEC_AGENT_DEVICE=cpu`. Embeddings and vision defaults remain small and CPU-capable, but image tasks may be slower without CUDA.

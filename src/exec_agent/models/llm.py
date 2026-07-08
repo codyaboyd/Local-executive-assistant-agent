@@ -9,6 +9,7 @@ from threading import Thread
 from typing import Iterator, Literal
 import warnings
 
+from app.models.registry import ModelRole, fallback_chain, pull_model, should_auto_pull
 from exec_agent.config import get_settings
 from exec_agent.safety import UserFacingError
 
@@ -55,9 +56,9 @@ def _pipeline_device(device: ResolvedDevice) -> int:
     return 0 if device == "cuda" else -1
 
 
-@lru_cache(maxsize=1)
-def load_llm():
-    """Load and cache the configured local text-generation pipeline."""
+@lru_cache(maxsize=16)
+def load_llm(role: str = ModelRole.GENERAL_REASONING.value, model_id: str | None = None):
+    """Load and cache a role-specific local text-generation pipeline with fallbacks."""
 
     try:
         from transformers import pipeline
@@ -69,11 +70,33 @@ def load_llm():
 
     settings = get_settings()
     device = _resolve_device(settings.device)
-    return pipeline(
-        "text-generation",
-        model=settings.model_id,
-        device=_pipeline_device(device),
-    )
+    errors: list[str] = []
+    for spec in fallback_chain(role, settings, override=model_id):
+        try:
+            if should_auto_pull(model_id, settings):
+                if spec.recommended_vram_gb > settings.max_vram_gb:
+                    warnings.warn(
+                        f"Skipping auto-pull for {spec.model_id}: recommends {spec.recommended_vram_gb:g}GB VRAM "
+                        f"above configured budget {settings.max_vram_gb}GB.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                else:
+                    pull_model(spec.model_id)
+            return pipeline(
+                "text-generation",
+                model=spec.model_id,
+                device=_pipeline_device(device),
+            )
+        except Exception as exc:  # noqa: BLE001 - try smaller/CPU-safe models before surfacing.
+            errors.append(f"{spec.model_id}: {exc}")
+            if device == "cuda":
+                try:
+                    warnings.warn(f"Could not load {spec.model_id} on CUDA; retrying on CPU.", RuntimeWarning, stacklevel=2)
+                    return pipeline("text-generation", model=spec.model_id, device=-1)
+                except Exception as cpu_exc:  # noqa: BLE001
+                    errors.append(f"{spec.model_id} cpu: {cpu_exc}")
+    raise RuntimeError("No configured or fallback model could be loaded. " + " | ".join(errors))
 
 
 def _generation_kwargs() -> dict[str, float | int | bool]:
@@ -89,10 +112,13 @@ def _generation_kwargs() -> dict[str, float | int | bool]:
     }
 
 
-def generate_text(prompt: str) -> str:
-    """Generate text for a prompt using the configured local model."""
+def generate_text(prompt: str, role: str = ModelRole.GENERAL_REASONING.value, model_id: str | None = None) -> str:
+    """Generate text for a prompt using the best role-specific local model."""
 
-    generator = load_llm()
+    try:
+        generator = load_llm(role, model_id)
+    except TypeError:
+        generator = load_llm()
     timeout = get_settings().model_timeout_seconds
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(generator, prompt, **_generation_kwargs())
@@ -108,8 +134,8 @@ def generate_text(prompt: str) -> str:
     return str(result)
 
 
-def stream_text(prompt: str) -> Iterator[str]:
-    """Stream generated text chunks for a prompt."""
+def stream_text(prompt: str, role: str = ModelRole.GENERAL_REASONING.value, model_id: str | None = None) -> Iterator[str]:
+    """Stream generated text chunks for a role-specific prompt."""
 
     try:
         from transformers import TextIteratorStreamer
@@ -119,7 +145,10 @@ def stream_text(prompt: str) -> Iterator[str]:
             "Install the project dependencies, then retry."
         ) from exc
 
-    generator = load_llm()
+    try:
+        generator = load_llm(role, model_id)
+    except TypeError:
+        generator = load_llm()
     tokenizer = getattr(generator, "tokenizer", None)
     if tokenizer is None:
         yield generate_text(prompt)

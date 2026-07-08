@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from app.graph.nodes import (
     call_llm,
     classify_intent,
+    coding_question_tool,
     document_question_tool,
     fallback_tool,
     general_chat_tool,
@@ -17,6 +18,7 @@ from app.graph.nodes import (
     route_after_approval,
     route_by_intent,
     save_context,
+    summarization_tool,
     task_planning_tool,
     web_research_tool,
 )
@@ -39,6 +41,8 @@ def build_graph():
     graph.add_node("load_context", load_context)
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("general_chat_tool", general_chat_tool)
+    graph.add_node("coding_question_tool", coding_question_tool)
+    graph.add_node("summarization_tool", summarization_tool)
     graph.add_node("document_question_tool", document_question_tool)
     graph.add_node("web_research_tool", web_research_tool)
     graph.add_node("image_question_tool", image_question_tool)
@@ -55,6 +59,8 @@ def build_graph():
         route_by_intent,
         {
             "general_chat": "general_chat_tool",
+            "coding_question": "coding_question_tool",
+            "summarization": "summarization_tool",
             "document_question": "document_question_tool",
             "web_research": "web_research_tool",
             "image_question": "image_question_tool",
@@ -65,6 +71,8 @@ def build_graph():
     )
     for node_name in (
         "general_chat_tool",
+        "coding_question_tool",
+        "summarization_tool",
         "document_question_tool",
         "web_research_tool",
         "image_question_tool",

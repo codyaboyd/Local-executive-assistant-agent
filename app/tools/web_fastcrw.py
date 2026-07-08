@@ -14,10 +14,13 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+import logging
 import socket
 
 from exec_agent.config import get_settings
 from app.memory.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 PROVIDER = "fastcrw_self_hosted"
 SOURCE_TYPE = "web"
@@ -87,7 +90,12 @@ def _headers() -> dict[str, str]:
 
 def _request(path: str, payload: dict[str, Any] | None = None, *, method: str | None = None) -> dict[str, Any]:
     settings = _settings()
+    if settings.local_only:
+        raise FastCRWError("Web access is disabled because local-only mode is active.")
     base_url = str(settings.fastcrw_base_url).rstrip("/")
+    parsed_base = urlparse(base_url)
+    if parsed_base.scheme not in {"http", "https"}:
+        raise FastCRWError("FastCRW base URL must use http or https.")
     api_prefix = str(settings.fastcrw_api_prefix).strip().rstrip("/")
     if api_prefix and not api_prefix.startswith("/"):
         api_prefix = f"/{api_prefix}"
@@ -95,6 +103,7 @@ def _request(path: str, payload: dict[str, Any] | None = None, *, method: str | 
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request = Request(url, data=body, headers=_headers(), method=method or ("POST" if payload is not None else "GET"))
     try:
+        logger.info("FastCRW request", extra={"event": "web_request", "url": url})
         with urlopen(request, timeout=settings.fastcrw_timeout_seconds) as response:  # noqa: S310 - user-configured self-hosted URL
             raw = response.read().decode("utf-8")
     except HTTPError as exc:

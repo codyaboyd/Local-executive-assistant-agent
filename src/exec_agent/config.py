@@ -33,7 +33,7 @@ class RuntimeProfileDefaults:
 RUNTIME_PROFILES: dict[RuntimeProfile, RuntimeProfileDefaults] = {
     "cpu-safe": RuntimeProfileDefaults(
         name="cpu-safe",
-        description="Conservative local CPU execution with web and HITL disabled.",
+        description="Conservative local CPU execution with web disabled and HITL enabled.",
         model_id="sshleifer/tiny-gpt2",
         device="cpu",
         web_enabled=False,
@@ -44,7 +44,7 @@ RUNTIME_PROFILES: dict[RuntimeProfile, RuntimeProfileDefaults] = {
     ),
     "gpu-fast": RuntimeProfileDefaults(
         name="gpu-fast",
-        description="Local GPU execution for faster inference with web and HITL disabled.",
+        description="Local GPU execution for faster inference with web disabled and HITL enabled.",
         model_id="distilgpt2",
         device="cuda",
         web_enabled=False,
@@ -55,7 +55,7 @@ RUNTIME_PROFILES: dict[RuntimeProfile, RuntimeProfileDefaults] = {
     ),
     "private-offline": RuntimeProfileDefaults(
         name="private-offline",
-        description="Private local-only mode; disables web access and FastCRW.",
+        description="Private local-only mode; disables web access and FastCRW with HITL enabled.",
         model_id="sshleifer/tiny-gpt2",
         device="auto",
         web_enabled=False,
@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.7, ge=0.0, validation_alias="EXEC_AGENT_TEMPERATURE")
     runtime_profile: RuntimeProfile = Field(default="private-offline", validation_alias="EXEC_AGENT_RUNTIME_PROFILE")
     hitl: bool = Field(default=False, validation_alias="EXEC_AGENT_HITL")
+    actions_hitl: bool = Field(default=True, validation_alias="EXEC_AGENT_ACTIONS_HITL")
+    local_only: bool = Field(default=False, validation_alias="EXEC_AGENT_LOCAL_ONLY")
     web_enabled: bool = Field(default=False, validation_alias="EXEC_AGENT_WEB_ENABLED")
     vector_db_path: Path | None = Field(default=None, validation_alias="EXEC_AGENT_VECTOR_DB_PATH")
     fastcrw_enabled: bool = Field(default=False, validation_alias="FASTCRW_ENABLED")
@@ -119,6 +121,10 @@ class Settings(BaseSettings):
     fastcrw_api_prefix: str = Field(default="/v1", validation_alias="FASTCRW_API_PREFIX")
     fastcrw_api_key: str | None = Field(default=None, validation_alias="FASTCRW_API_KEY")
     fastcrw_timeout_seconds: int = Field(default=30, ge=1, validation_alias="FASTCRW_TIMEOUT_SECONDS")
+    model_timeout_seconds: int = Field(default=120, ge=1, validation_alias="EXEC_AGENT_MODEL_TIMEOUT_SECONDS")
+    max_upload_bytes: int = Field(default=10 * 1024 * 1024, ge=1, validation_alias="EXEC_AGENT_MAX_UPLOAD_BYTES")
+    allowed_upload_extensions: str = Field(default=".pdf,.docx,.png,.jpg,.jpeg,.webp,.txt,.md", validation_alias="EXEC_AGENT_ALLOWED_UPLOAD_EXTENSIONS")
+    structured_logging: bool = Field(default=True, validation_alias="EXEC_AGENT_STRUCTURED_LOGGING")
     fastcrw_max_results: int = Field(default=5, ge=1, validation_alias="FASTCRW_MAX_RESULTS")
     fastcrw_enable_scrape: bool = Field(default=True, validation_alias="FASTCRW_ENABLE_SCRAPE")
     fastcrw_enable_crawl: bool = Field(default=False, validation_alias="FASTCRW_ENABLE_CRAWL")
@@ -143,6 +149,11 @@ class Settings(BaseSettings):
             self.log_level = profile.log_level
         if profile_was_selected or "fastcrw_crawl_requires_approval" not in self.model_fields_set:
             self.fastcrw_crawl_requires_approval = profile.fastcrw_crawl_requires_approval
+        if self.local_only:
+            self.web_enabled = False
+            self.fastcrw_enabled = False
+            self.fastcrw_enable_scrape = False
+            self.fastcrw_enable_crawl = False
         if self.vector_db_path is None:
             self.vector_db_path = self.expanded_data_dir / profile.vector_db_subdir
 

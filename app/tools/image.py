@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from app.memory.vector_store import VectorStore
 from exec_agent.config import get_settings
+from exec_agent.safety import validate_local_file
 
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_IMAGE_CAPTION_MODEL = "Salesforce/blip-image-captioning-base"
@@ -25,13 +26,11 @@ class ImageAnalysisResult:
 def validate_image_path(path: str | Path) -> Path:
     """Return a resolved image path, validating existence and supported extension."""
 
-    image_path = Path(path).expanduser().resolve()
-    if not image_path.exists():
-        raise FileNotFoundError(f"Image not found: {image_path}")
-    if image_path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
+    try:
+        return validate_local_file(path, allowed_extensions=SUPPORTED_IMAGE_EXTENSIONS, purpose="image")
+    except ValueError as exc:
         supported = ", ".join(sorted(SUPPORTED_IMAGE_EXTENSIONS))
-        raise ValueError(f"Unsupported image type {image_path.suffix!r}. Supported image types: {supported}")
-    return image_path
+        raise ValueError(f"Unsupported image type {Path(path).suffix!r}. Supported image types: {supported}") from exc
 
 
 def describe_image(

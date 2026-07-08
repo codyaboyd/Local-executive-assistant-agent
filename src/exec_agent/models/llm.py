@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache
+from queue import Queue
 from threading import Thread
 from typing import Iterator, Literal
 import warnings
 
 from exec_agent.config import get_settings
+from exec_agent.safety import UserFacingError
 
 ResolvedDevice = Literal["cpu", "cuda"]
 
@@ -90,7 +93,14 @@ def generate_text(prompt: str) -> str:
     """Generate text for a prompt using the configured local model."""
 
     generator = load_llm()
-    result = generator(prompt, **_generation_kwargs())
+    timeout = get_settings().model_timeout_seconds
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(generator, prompt, **_generation_kwargs())
+        try:
+            result = future.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise UserFacingError(f"Model generation timed out after {timeout} seconds. Try a shorter prompt or increase EXEC_AGENT_MODEL_TIMEOUT_SECONDS.") from exc
     if isinstance(result, list) and result:
         first = result[0]
         if isinstance(first, dict) and "generated_text" in first:
@@ -115,14 +125,30 @@ def stream_text(prompt: str) -> Iterator[str]:
         yield generate_text(prompt)
         return
 
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=1.0)
     kwargs = _generation_kwargs()
     kwargs.pop("return_full_text", None)
-    thread = Thread(
-        target=generator,
-        kwargs={"text_inputs": prompt, "streamer": streamer, **kwargs},
-        daemon=True,
-    )
+    errors: Queue[BaseException] = Queue(maxsize=1)
+
+    def run_generator() -> None:
+        try:
+            generator(text_inputs=prompt, streamer=streamer, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - surface model failures after streaming stops.
+            errors.put(exc)
+
+    thread = Thread(target=run_generator, daemon=True)
     thread.start()
-    yield from streamer
-    thread.join()
+    timeout = get_settings().model_timeout_seconds
+    thread.join(timeout=0)
+    import time
+    deadline = time.monotonic() + timeout
+    while thread.is_alive() or not errors.empty():
+        if time.monotonic() > deadline:
+            raise UserFacingError(f"Model streaming timed out after {timeout} seconds. Try a shorter prompt or increase EXEC_AGENT_MODEL_TIMEOUT_SECONDS.")
+        if not errors.empty():
+            raise errors.get()
+        try:
+            yield next(streamer)
+        except StopIteration:
+            break
+    thread.join(timeout=1)

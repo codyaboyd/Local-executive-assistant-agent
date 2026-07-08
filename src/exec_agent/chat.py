@@ -17,6 +17,7 @@ from exec_agent.config import get_settings
 from app.graph.builder import build_graph
 from app.graph.state import ApprovalDecision, AssistantState, ProposedAction
 from exec_agent.models.llm import generate_text, stream_text
+from exec_agent.safety import UserFacingError
 
 
 class ChatAction(str, Enum):
@@ -229,6 +230,11 @@ class TerminalChat:
         self.console.print("[bold magenta]Assistant[/bold magenta]: ", end="")
         try:
             result = self.graph.invoke(graph_state)
+        except Exception as exc:  # noqa: BLE001 - top-level chat boundary must stay user-friendly.
+            self._stop_progress()
+            detail = str(exc) if isinstance(exc, UserFacingError) else f"Unexpected agent error: {exc}"
+            self.console.print(f"\n[red]The agent stopped safely before completing the turn. {detail}[/red]")
+            return
         finally:
             self._stop_progress()
         self.console.print()

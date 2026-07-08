@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from app.memory.vector_store import VectorStore
+from exec_agent.safety import validate_local_file
 from app.tools.pdf import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, chunk_text
 
 
@@ -30,11 +31,7 @@ class DOCXChunk:
 def extract_docx_sections(path: str | Path) -> list[DOCXSection]:
     """Extract paragraphs, headings, and tables from a DOCX grouped by heading section."""
 
-    docx_path = Path(path).expanduser().resolve()
-    if not docx_path.exists():
-        raise FileNotFoundError(f"DOCX not found: {docx_path}")
-    if docx_path.suffix.lower() != ".docx":
-        raise ValueError(f"Expected a .docx file, got: {docx_path}")
+    docx_path = validate_local_file(path, allowed_extensions={".docx"}, purpose="DOCX")
 
     try:
         from docx import Document

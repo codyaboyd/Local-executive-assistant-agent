@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from app.memory.vector_store import VectorStore
+from exec_agent.safety import validate_local_file
 
 DEFAULT_CHUNK_SIZE = 1_000
 DEFAULT_CHUNK_OVERLAP = 150
@@ -32,11 +33,7 @@ class PDFChunk:
 def extract_pdf_pages(path: str | Path) -> list[PDFPageText]:
     """Extract text from a PDF page by page using pypdf."""
 
-    pdf_path = Path(path).expanduser().resolve()
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-    if pdf_path.suffix.lower() != ".pdf":
-        raise ValueError(f"Expected a .pdf file, got: {pdf_path}")
+    pdf_path = validate_local_file(path, allowed_extensions={".pdf"}, purpose="PDF")
 
     try:
         from pypdf import PdfReader

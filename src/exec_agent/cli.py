@@ -8,6 +8,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from exec_agent.config import RUNTIME_PROFILES, get_settings
+from exec_agent.logging import configure_logging
+from exec_agent.safety import UserFacingError, validate_local_file
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from exec_agent.sessions import ChatSessionStore, PersistedChatSession
@@ -26,6 +28,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console(width=140)
+configure_logging(get_settings().log_level, structured=get_settings().structured_logging)
 memory_app = typer.Typer(help="Manage SQLite-backed long-term memories.")
 rag_app = typer.Typer(help="Search local vector RAG context.")
 ingest_app = typer.Typer(help="Ingest documents into local vector RAG context.")
@@ -128,9 +131,9 @@ def _read_task_input(text: str | None = None, path: str | None = None) -> str:
         raise typer.BadParameter("Use either --text or --file, not both.")
     if path:
         try:
-            return Path(path).read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            console.print(f"[red]File not found: {path}[/red]")
+            return validate_local_file(path, allowed_extensions={".txt", ".md"}, purpose="input file").read_text(encoding="utf-8")
+        except (FileNotFoundError, UserFacingError, OSError) as exc:
+            console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
     if text:
         return text
@@ -146,7 +149,12 @@ def _render_workflow_result(title: str, body: str) -> None:
 
 
 def _generate_workflow(title: str, prompt: str) -> None:
-    _render_workflow_result(title, generate_text(prompt).strip())
+    try:
+        output = generate_text(prompt).strip()
+    except Exception as exc:  # noqa: BLE001 - CLI boundary returns clear user-facing errors.
+        console.print(f"[red]Could not generate workflow output safely: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    _render_workflow_result(title, output)
 
 
 def _web_research_context(topic: str, max_results: int) -> str:
@@ -287,7 +295,7 @@ def chat(
         session_name=session,
         session_summary=summary,
         session_store=store,
-        hitl=hitl or get_settings().hitl,
+        hitl=hitl or get_settings().actions_hitl,
         debug=debug,
     ).run()
 
@@ -368,13 +376,19 @@ def config() -> None:
     table.add_row("temperature", str(settings.temperature))
     table.add_row("runtime_profile", settings.runtime_profile)
     table.add_row("hitl", str(settings.hitl))
+    table.add_row("actions_hitl", str(settings.actions_hitl))
     table.add_row("web_enabled", str(settings.web_enabled))
+    table.add_row("local_only", str(settings.local_only))
     table.add_row("fastcrw_enabled", str(settings.fastcrw_enabled))
     table.add_row("fastcrw_crawl_requires_approval", str(settings.fastcrw_crawl_requires_approval))
     table.add_row("fastcrw_base_url", settings.fastcrw_base_url)
     table.add_row("fastcrw_api_prefix", settings.fastcrw_api_prefix)
     table.add_row("fastcrw_api_key", "set" if settings.fastcrw_api_key else "not set")
     table.add_row("fastcrw_timeout_seconds", str(settings.fastcrw_timeout_seconds))
+    table.add_row("model_timeout_seconds", str(settings.model_timeout_seconds))
+    table.add_row("max_upload_bytes", str(settings.max_upload_bytes))
+    table.add_row("allowed_upload_extensions", settings.allowed_upload_extensions)
+    table.add_row("structured_logging", str(settings.structured_logging))
     table.add_row("fastcrw_max_results", str(settings.fastcrw_max_results))
     table.add_row("fastcrw_enable_scrape", str(settings.fastcrw_enable_scrape))
     table.add_row("fastcrw_enable_crawl", str(settings.fastcrw_enable_crawl))
@@ -385,7 +399,11 @@ def config() -> None:
 def model_test(prompt: str) -> None:
     """Generate a sample response with the configured local model."""
 
-    console.print(generate_text(prompt))
+    try:
+        console.print(generate_text(prompt))
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Model test failed safely: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
 
 
 def _memory_store() -> LongTermMemoryStore:
@@ -479,7 +497,7 @@ def ingest_pdf(path: str) -> None:
 
     try:
         chunk_count = ingest_pdf_file(path)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError, UserFacingError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(f"[green]Ingested {chunk_count} PDF chunks from {path}.[/green]")
@@ -491,7 +509,7 @@ def ingest_docx(path: str) -> None:
 
     try:
         chunk_count = ingest_docx_file(path)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError, UserFacingError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(f"[green]Ingested {chunk_count} DOCX chunks from {path}.[/green]")
@@ -507,7 +525,7 @@ def image_describe(
 
     try:
         result = describe_image_file(path, model_id=model_id, device=_normalize_device_option(device))
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError, UserFacingError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(result.text)
@@ -525,7 +543,7 @@ def image_ask(
 
     try:
         result = ask_image_file(path, question, model_id=model_id, device=_normalize_device_option(device))
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError, UserFacingError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(result.text)

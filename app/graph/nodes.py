@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from exec_agent.models.llm import generate_text, stream_text
+from exec_agent.safety import UserFacingError
 
 from app.graph.state import ApprovalDecision, AssistantMessage, AssistantState, IntentName, ProposedAction
 from app.memory.long_term import LongTermMemoryStore, format_memories_for_prompt
@@ -16,6 +17,28 @@ from app.tools import web_fastcrw
 logger = logging.getLogger(__name__)
 
 TextStreamer = Callable[[str], Iterable[str]]
+
+
+def _safe_tool_error(tool_name: str, exc: Exception) -> AssistantState:
+    """Return a user-facing tool failure instead of crashing the graph."""
+
+    logger.exception("Tool failed", extra={"tool": tool_name, "event": "tool_error"})
+    message = str(exc) if isinstance(exc, UserFacingError) else (
+        f"{tool_name} failed safely. No external action was completed. Details: {exc}"
+    )
+    return {
+        "prompt": f"Tool route: {tool_name}\nTool error: {message}\nExplain this limitation clearly to the user and suggest a safe next step.",
+        "tool_call_log": [{"tool": tool_name, "intent": "error", "details": {"error": message}}],
+    }
+
+
+def _guard_tool(tool_name: str, fn: Callable[[AssistantState], AssistantState]) -> Callable[[AssistantState], AssistantState]:
+    def wrapped(state: AssistantState) -> AssistantState:
+        try:
+            return fn(state)
+        except Exception as exc:  # noqa: BLE001 - tool boundary must convert failures to safe messages.
+            return _safe_tool_error(tool_name, exc)
+    return wrapped
 
 
 def _emit_progress(state: AssistantState, stage: str, message: str, *, node: str | None = None) -> None:
@@ -80,7 +103,7 @@ def _record_tool_call(
     """Record and print tool calls so they remain observable in terminal output."""
 
     entry = {"tool": tool_name, "intent": intent, "details": details or {}}
-    logger.info("TOOL CALL: %s intent=%s details=%s", tool_name, intent, entry["details"])
+    logger.info("Tool call", extra={"tool": tool_name, "intent": intent, "event": "tool_call"})
     print(f"TOOL CALL: {tool_name} intent={intent} details={entry['details']}")
     return {"tool_name": tool_name, "tool_call_log": [*state.get("tool_call_log", []), entry]}
 
@@ -386,8 +409,14 @@ def call_llm(state: AssistantState) -> AssistantState:
     logger.info("Running graph node: call_llm")
     _emit_progress(state, "generation", "Generating answer", node="call_llm")
     prompt = state.get("prompt", "")
-    response_chunks = list(_get_streamer(state)(prompt))
-    response = "".join(response_chunks)
+    try:
+        response_chunks = list(_get_streamer(state)(prompt))
+        response = "".join(response_chunks)
+    except Exception as exc:  # noqa: BLE001 - model boundary must produce a clear user-facing error.
+        logger.exception("Model generation failed", extra={"event": "model_error", "node": "call_llm"})
+        detail = str(exc) if isinstance(exc, UserFacingError) else f"Model generation failed: {exc}"
+        response_chunks = [f"I could not generate a response safely. {detail}"]
+        response = response_chunks[0]
     return {
         "response_chunks": response_chunks,
         "response": response,
@@ -440,3 +469,13 @@ def _summarize_messages(messages: list[AssistantMessage], *, max_chars: int = 12
     if len(summary) <= max_chars:
         return summary
     return "…" + summary[-max_chars:]
+
+
+# Ensure every graph tool node has a protective error boundary.
+general_chat_tool = _guard_tool("general_chat.respond", general_chat_tool)
+document_question_tool = _guard_tool("documents.vector_search", document_question_tool)
+web_research_tool = _guard_tool("fastcrw.web_research", web_research_tool)
+image_question_tool = _guard_tool("image.analyze", image_question_tool)
+memory_update_tool = _guard_tool("memory.update", memory_update_tool)
+task_planning_tool = _guard_tool("planner.create_plan", task_planning_tool)
+fallback_tool = _guard_tool("fallback.general_chat", fallback_tool)

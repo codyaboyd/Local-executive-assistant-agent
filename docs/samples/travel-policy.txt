@@ -1,0 +1,5 @@
+Travel Policy Fixture
+
+Receipts are required for expenses over $25.
+Flights should be booked at least 14 days in advance when possible.
+Exceptions require manager approval and a short business justification.

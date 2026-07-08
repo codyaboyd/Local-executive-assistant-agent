@@ -1,7 +1,7 @@
 [project]
 name = "local-executive-assistant-agent"
 version = "0.1.0"
-description = "Terminal-based local-first AI executive assistant scaffold."
+description = "Terminal-based local-first AI executive assistant."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

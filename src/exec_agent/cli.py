@@ -1,4 +1,4 @@
-"""Command-line interface for the executive assistant scaffold."""
+"""Command-line interface for the executive assistant."""
 
 from pathlib import Path
 
@@ -24,7 +24,7 @@ from app.evals import render_results_table, run_evals
 
 app = typer.Typer(
     name="exec-agent",
-    help="A local-first terminal AI executive assistant scaffold.",
+    help="A local-first terminal AI executive assistant for Linux.",
     no_args_is_help=True,
 )
 console = Console(width=140)

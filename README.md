@@ -111,6 +111,11 @@ uv run exec-agent memory search board
 uv run exec-agent task action-items --file docs/samples/board-prep-notes.md
 uv run exec-agent task draft-email "ask finance for budget deltas" --tone warm
 uv run exec-agent task action-items --file docs/samples/travel-policy.txt
+uv run exec-agent task run "prepare a board meeting checklist"
+uv run exec-agent task run "prepare a board meeting checklist" --autonomous
+uv run exec-agent task status
+uv run exec-agent task cancel <task_id>
+uv run exec-agent task history
 uv run exec-agent eval run
 ```
 
@@ -135,6 +140,19 @@ uv run exec-agent web search "AI market update" --max-results 3
 ```
 
 Private and CPU-safe profiles disable web access. `EXEC_AGENT_LOCAL_ONLY=true` always disables web, scraping, and crawling regardless of profile.
+
+## Autonomous task execution
+
+The autonomous task runner persists plans, step outputs, errors, and final summaries to SQLite so terminal commands and web UI clients can stream or poll the same task progress source. Configure autonomy with:
+
+```bash
+EXEC_AGENT_AUTONOMY_LEVEL=human_approved
+EXEC_AGENT_MAX_AUTONOMOUS_STEPS=25
+EXEC_AGENT_REQUIRE_APPROVAL_FOR_DANGEROUS_COMMANDS=true
+EXEC_AGENT_TASK_TIMEOUT_SECONDS=1800
+```
+
+Supported autonomy levels are `off`, `suggest_only`, `human_approved`, `autonomous_limited`, and `autonomous_full`. The default is `human_approved`; use `exec-agent task run "..." --autonomous` to opt into full autonomous execution for a single run. Loop safeguards stop tasks when they repeat results, exceed the configured step budget, hit the timeout, or select a dangerous tool while approvals are required.
 
 ## Architecture
 

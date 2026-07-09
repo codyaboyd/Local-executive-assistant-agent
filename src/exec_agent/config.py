@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 RuntimeProfile = Literal["cpu-safe", "gpu-fast", "private-offline", "research-online", "test-hitl"]
 DeviceMode = Literal["cpu", "cuda", "auto"]
 ModelPreset = Literal["default", "low_vram", "cpu_only", "quality", "coding", "research"]
+AutonomyLevel = Literal["off", "suggest_only", "human_approved", "autonomous_limited", "autonomous_full"]
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,10 @@ class Settings(BaseSettings):
     runtime_profile: RuntimeProfile = Field(default="private-offline", validation_alias="EXEC_AGENT_RUNTIME_PROFILE")
     hitl: bool = Field(default=False, validation_alias="EXEC_AGENT_HITL")
     actions_hitl: bool = Field(default=True, validation_alias="EXEC_AGENT_ACTIONS_HITL")
+    autonomy_level: AutonomyLevel = Field(default="human_approved", validation_alias="EXEC_AGENT_AUTONOMY_LEVEL")
+    max_autonomous_steps: int = Field(default=25, ge=1, validation_alias="EXEC_AGENT_MAX_AUTONOMOUS_STEPS")
+    require_approval_for_dangerous_commands: bool = Field(default=True, validation_alias="EXEC_AGENT_REQUIRE_APPROVAL_FOR_DANGEROUS_COMMANDS")
+    task_timeout_seconds: int = Field(default=1800, ge=1, validation_alias="EXEC_AGENT_TASK_TIMEOUT_SECONDS")
     local_only: bool = Field(default=False, validation_alias="EXEC_AGENT_LOCAL_ONLY")
     web_enabled: bool = Field(default=False, validation_alias="EXEC_AGENT_WEB_ENABLED")
     vector_db_path: Path | None = Field(default=None, validation_alias="EXEC_AGENT_VECTOR_DB_PATH")

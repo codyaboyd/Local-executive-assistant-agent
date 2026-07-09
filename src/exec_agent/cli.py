@@ -22,6 +22,7 @@ from app.tools.image import ask_image as ask_image_file
 from app.tools.image import describe_image as describe_image_file
 from app.tools import web_fastcrw
 from app.tools import filesystem as fs_tools
+from app.tools import shell as shell_tools
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 from app.evals import render_results_table, run_evals
@@ -44,6 +45,7 @@ profile_app = typer.Typer(help="List and activate runtime profiles.")
 eval_app = typer.Typer(help="Run offline testing and evaluation tasks.")
 models_app = typer.Typer(help="Inspect, pull, benchmark, and pin role-specific models.")
 fs_app = typer.Typer(help="Controlled filesystem access within configured allowed directories.")
+shell_app = typer.Typer(help="Run safe allowlisted shell commands in the configured workspace.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
@@ -55,6 +57,45 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(eval_app, name="eval")
 app.add_typer(models_app, name="models")
 app.add_typer(fs_app, name="fs")
+app.add_typer(shell_app, name="shell")
+
+
+@shell_app.command("run")
+def shell_run(
+    command: str = typer.Argument(..., help="Command to run, quoted as one string."),
+    cwd: str | None = typer.Option(None, "--cwd", help="Working directory inside EXEC_AGENT_SHELL_WORKDIR."),
+    timeout: float | None = typer.Option(None, "--timeout", help="Override timeout in seconds."),
+) -> None:
+    """Run a safe command and persist its result in shell history."""
+
+    try:
+        result = shell_tools.run_command(command, cwd=cwd, timeout=timeout)
+    except (UserFacingError, OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[bold]Exit code:[/bold] {result.exit_code}")
+    console.print(f"[bold]Duration:[/bold] {result.duration_seconds:.2f}s")
+    console.print(f"[bold]Working directory:[/bold] {result.cwd}")
+    raise typer.Exit(code=0 if result.exit_code == 0 else result.exit_code)
+
+
+@shell_app.command("history")
+def shell_history(limit: int = typer.Option(50, "--limit", "-n", min=1, help="Number of commands to show.")) -> None:
+    """Show recent shell command history."""
+
+    table = Table(title="Shell Command History")
+    for column in ["ID", "Exit", "Duration", "CWD", "Command", "Finished"]:
+        table.add_column(column)
+    for item in shell_tools.history(limit=limit):
+        table.add_row(
+            str(item.id),
+            str(item.exit_code),
+            f"{item.duration_seconds:.2f}s",
+            item.cwd,
+            item.command,
+            item.finished_at[:19],
+        )
+    console.print(table)
 
 
 @fs_app.command("list")

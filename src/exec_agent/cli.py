@@ -21,6 +21,7 @@ from app.tools.docx import ingest_docx as ingest_docx_file
 from app.tools.image import ask_image as ask_image_file
 from app.tools.image import describe_image as describe_image_file
 from app.tools import web_fastcrw
+from app.tools import filesystem as fs_tools
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 from app.evals import render_results_table, run_evals
@@ -42,6 +43,7 @@ task_app = typer.Typer(help="Run executive-assistant task workflows without modi
 profile_app = typer.Typer(help="List and activate runtime profiles.")
 eval_app = typer.Typer(help="Run offline testing and evaluation tasks.")
 models_app = typer.Typer(help="Inspect, pull, benchmark, and pin role-specific models.")
+fs_app = typer.Typer(help="Controlled filesystem access within configured allowed directories.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(rag_app, name="rag")
 app.add_typer(ingest_app, name="ingest")
@@ -52,6 +54,42 @@ app.add_typer(task_app, name="task")
 app.add_typer(profile_app, name="profile")
 app.add_typer(eval_app, name="eval")
 app.add_typer(models_app, name="models")
+app.add_typer(fs_app, name="fs")
+
+
+@fs_app.command("list")
+def fs_list(path: str = typer.Argument("./workspace", help="Allowed directory to list.")) -> None:
+    """List files in an allowed directory."""
+
+    try:
+        for entry in fs_tools.list_dir(path):
+            console.print(entry)
+    except (FileNotFoundError, UserFacingError, OSError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+@fs_app.command("read")
+def fs_read(path: str = typer.Argument(..., help="Allowed file to read.")) -> None:
+    """Read a file from an allowed directory."""
+
+    try:
+        console.print(fs_tools.read_file(path))
+    except (FileNotFoundError, UserFacingError, OSError, UnicodeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+@fs_app.command("search")
+def fs_search(query: str, root: str = typer.Argument("./workspace", help="Allowed root to search.")) -> None:
+    """Search files under an allowed directory for a keyword."""
+
+    try:
+        for match in fs_tools.search_files(query, root):
+            console.print(match)
+    except (FileNotFoundError, UserFacingError, OSError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
 
 
 @models_app.command("list")
@@ -577,6 +615,10 @@ def config() -> None:
     table.add_row("fastcrw_max_results", str(settings.fastcrw_max_results))
     table.add_row("fastcrw_enable_scrape", str(settings.fastcrw_enable_scrape))
     table.add_row("fastcrw_enable_crawl", str(settings.fastcrw_enable_crawl))
+    table.add_row("allowed_dirs", settings.allowed_dirs)
+    table.add_row("readonly_dirs", settings.readonly_dirs)
+    table.add_row("blocked_paths", settings.blocked_paths)
+    table.add_row("max_file_size_mb", str(settings.max_file_size_mb))
     console.print(table)
 
 

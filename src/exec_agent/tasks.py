@@ -210,6 +210,10 @@ class AutonomousTaskRunner:
         repeated_results: dict[str, int] = {}
         try:
             for step_number in range(1, settings.max_autonomous_steps + 1):
+                latest = self.store.get(task.task_id)
+                if latest and latest.status == "cancelled":
+                    self._emit(f"Task {task.task_id} cancelled by emergency stop.")
+                    break
                 if time.monotonic() - started > settings.task_timeout_seconds:
                     self.store.update_status(task.task_id, "blocked", error="Task timeout reached.")
                     break

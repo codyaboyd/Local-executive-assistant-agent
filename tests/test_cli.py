@@ -385,3 +385,28 @@ def test_profile_use_persists_profile(tmp_path, monkeypatch) -> None:
     assert "Activated runtime profile" in result.output
     assert "cpu-safe" in (tmp_path / ".env").read_text(encoding="utf-8")
     get_settings.cache_clear()
+
+
+def test_task_run_status_history_cancel_cli(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EXEC_AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("EXEC_AGENT_MAX_AUTONOMOUS_STEPS", "5")
+    from exec_agent.config import get_settings
+
+    get_settings.cache_clear()
+    run_result = runner.invoke(app, ["task", "run", "prepare agenda", "--autonomous"])
+    assert run_result.exit_code == 0
+    assert "Task ID:" in run_result.output
+    task_id = [line.split(":", 1)[1].strip() for line in run_result.output.splitlines() if line.startswith("Task ID:")][0]
+
+    status_result = runner.invoke(app, ["task", "status", task_id])
+    assert status_result.exit_code == 0
+    assert "prepare agenda" in status_result.output
+
+    history_result = runner.invoke(app, ["task", "history"])
+    assert history_result.exit_code == 0
+    assert task_id in history_result.output
+
+    cancel_result = runner.invoke(app, ["task", "cancel", task_id])
+    assert cancel_result.exit_code == 0
+    assert "Cancelled task" in cancel_result.output
+    get_settings.cache_clear()

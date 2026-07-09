@@ -15,6 +15,7 @@ from exec_agent.safety import UserFacingError, validate_local_file
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from exec_agent.sessions import ChatSessionStore, PersistedChatSession
+from exec_agent.tasks import AutonomousTaskRunner, TaskStore
 from app.tools.pdf import ingest_pdf as ingest_pdf_file
 from app.tools.docx import ingest_docx as ingest_docx_file
 from app.tools.image import ask_image as ask_image_file
@@ -291,6 +292,62 @@ def _rag_context(query: str, k: int) -> str:
     return "\n\n".join(lines)
 
 
+@task_app.command("run")
+def task_run(
+    description: str = typer.Argument(..., help="Task description to execute."),
+    autonomous: bool = typer.Option(False, "--autonomous", help="Run with autonomous_full for this task."),
+) -> None:
+    """Run a persisted autonomous task loop with progress streaming."""
+
+    settings = get_settings()
+    level = "autonomous_full" if autonomous else settings.autonomy_level
+    runner = AutonomousTaskRunner(progress=lambda message: console.print(f"[cyan]{message}[/cyan]"))
+    task = runner.run(description, autonomy_level=level)
+    console.print(f"Task ID: {task.task_id}")
+    console.print(f"Status: {task.status}")
+    if task.final_summary:
+        console.print(Panel(task.final_summary, title="Final Summary", border_style="green"))
+    if task.error:
+        console.print(f"[yellow]Blocked/Error:[/yellow] {task.error}")
+
+
+@task_app.command("status")
+def task_status(task_id: str | None = typer.Argument(None, help="Task ID; defaults to latest task.")) -> None:
+    """Show task status and recorded steps."""
+
+    store = TaskStore()
+    task = store.get(task_id) if task_id else store.latest()
+    if task is None:
+        console.print("[yellow]No task found.[/yellow]")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]Task:[/bold] {task.task_id} ({task.status})")
+    console.print(f"[bold]Goal:[/bold] {task.description}")
+    for step in store.steps(task.task_id):
+        console.print(f"{step.step_number}. {step.phase} / {step.tool_name}: {step.result or step.error}")
+
+
+@task_app.command("cancel")
+def task_cancel(task_id: str) -> None:
+    """Cancel a persisted task by ID."""
+
+    if not TaskStore().cancel(task_id):
+        console.print(f"[red]Task {task_id!r} not found.[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Cancelled task {task_id}.[/green]")
+
+
+@task_app.command("history")
+def task_history() -> None:
+    """List recent autonomous task runs."""
+
+    table = Table(title="Task History")
+    for column in ["Task ID", "Status", "Autonomy", "Description", "Updated"]:
+        table.add_column(column)
+    for task in TaskStore().list():
+        table.add_row(task.task_id, task.status, task.autonomy_level, task.description, task.updated_at[:19])
+    console.print(table)
+
+
 @task_app.command("summarize-notes")
 def task_summarize_notes(
     text: str | None = typer.Option(None, "--text", help="Notes text to summarize."),
@@ -501,6 +558,10 @@ def config() -> None:
     table.add_row("runtime_profile", settings.runtime_profile)
     table.add_row("hitl", str(settings.hitl))
     table.add_row("actions_hitl", str(settings.actions_hitl))
+    table.add_row("autonomy_level", settings.autonomy_level)
+    table.add_row("max_autonomous_steps", str(settings.max_autonomous_steps))
+    table.add_row("require_approval_for_dangerous_commands", str(settings.require_approval_for_dangerous_commands))
+    table.add_row("task_timeout_seconds", str(settings.task_timeout_seconds))
     table.add_row("web_enabled", str(settings.web_enabled))
     table.add_row("local_only", str(settings.local_only))
     table.add_row("fastcrw_enabled", str(settings.fastcrw_enabled))

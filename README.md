@@ -210,3 +210,40 @@ uv run exec-agent models benchmark
 | 16GB VRAM | `quality` or `coding` | Qwen/Qwen2.5-7B-Instruct or Mistral-7B-Instruct quantized | Qwen/Qwen2.5-Coder-7B-Instruct quantized | BAAI/bge-base-en-v1.5 for quality, BAAI/bge-small-en-v1.5 by default | Qwen/Qwen2-VL-2B-Instruct | Strongest local tier in the curated registry while staying inside the consumer-GPU target. |
 
 Summarization and document QA use the active general reasoning tier by default, and `EXEC_AGENT_SUMMARY_MODEL_ID` can point to a specialized summarization model when a workflow needs one. Tool calling prefers the strongest instruction-following Qwen model that fits the active preset and VRAM budget.
+
+## Bootstrap web UI
+
+The project includes a FastAPI-backed, Bootstrap 5 remote web interface for operating the assistant from a browser without React.
+
+### Start the web UI
+
+```bash
+uv run exec-agent-web
+# or
+uv run uvicorn exec_agent.web:app --host 0.0.0.0 --port 8000
+```
+
+Open <http://localhost:8000>. To require login, set a local web password before starting the server:
+
+```bash
+export EXEC_AGENT_WEB_PASSWORD='choose-a-local-password'
+uv run exec-agent-web
+```
+
+### Routes and capabilities
+
+| Route | Capability |
+| --- | --- |
+| `/login`, `/logout` | Optional password-gated browser session. |
+| `/` | Mobile-friendly dashboard with dark mode and quick links. |
+| `/chat` | Streaming assistant chat over Server-Sent Events. |
+| `/tasks`, `/tasks/{task_id}` | Run autonomous tasks, view progress, and approve/reject HITL action cards. |
+| `/files` | Browse configured allowed directories and upload PDF, DOCX, image, Markdown, or text files. |
+| `/ingest` | Ingest uploaded or local PDF/DOCX/text/image files into the vector database. |
+| `/memory` | Search and manage long-term SQLite memories. |
+| `/models` | View model registry entries and active model selections/status. |
+| `/settings` | Inspect runtime settings and choose the active runtime profile for the next restart. |
+| `/web` | Run self-hosted FastCRW web searches and view service health. |
+| `/shell` | Run allowlisted shell commands inside the configured shell workspace and view command history. |
+
+The UI uses Bootstrap responsive components, a persistent dark-mode toggle, and Rich-inspired readable cards/preformatted output for chat, task, and shell streams. File browsing, shell execution, FastCRW, uploads, and ingestion continue to respect the same safety settings used by the CLI, including allowed directories, upload extensions, command allowlists, and autonomy/HITL gates.

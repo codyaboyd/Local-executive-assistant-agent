@@ -40,25 +40,26 @@ uv run exec-agent chat
 - Optional NVIDIA GPU with working CUDA driver for GPU mode.
 - Optional Docker Compose for self-hosted FastCRW.
 
-## Generated Makefile commands
+## Makefile commands
 
-The repository keeps product workflow targets out of the checked-in Makefile. Use `scripts/dev_make.py` to generate a temporary Makefile on the fly and delegate to `make`.
+The checked-in Makefile exposes common product workflows directly. You can pass CLI subcommands through `ARGS="..."` and web subcommands through `WEB_ARGS="..."`.
 
 | Command | Purpose |
 | --- | --- |
-| `python scripts/dev_make.py install` | Sync runtime and development dependencies with `uv sync --extra dev`. |
-| `python scripts/dev_make.py test` | Run the pytest suite. |
-| `python scripts/dev_make.py run` | Generates a temporary Makefile and runs `exec-agent`; defaults to `chat`. Pass subcommands with `ARGS="..."`. |
-| `python scripts/dev_make.py eval` | Run offline deterministic assistant evals. |
-| `python scripts/dev_make.py fastcrw-up` | Start the optional self-hosted FastCRW container. |
-| `python scripts/dev_make.py fastcrw-down` | Stop FastCRW. |
-| `python scripts/dev_make.py fastcrw-health` | Check FastCRW health. |
+| `make install` | Sync runtime and development dependencies with `uv sync --extra dev`. |
+| `make test` | Run the pytest suite. |
+| `make run` | Run `exec-agent`; defaults to `chat`. Pass subcommands with `ARGS="..."`. |
+| `make web` | Run `exec-agent web serve`. Pass setup commands with `WEB_ARGS="set-password"`. |
+| `make eval` | Run offline deterministic assistant evals. |
+| `make fastcrw-up` | Start the optional self-hosted FastCRW container. |
+| `make fastcrw-down` | Stop FastCRW. |
+| `make fastcrw-health` | Check FastCRW health. |
 
 Examples:
 
 ```bash
-python scripts/dev_make.py run ARGS="profile list"
-python scripts/dev_make.py run ARGS="task summarize-notes --file docs/samples/board-prep-notes.md"
+make run ARGS="profile list"
+make run ARGS="task summarize-notes --file docs/samples/board-prep-notes.md"
 ```
 
 ## Environment files
@@ -249,3 +250,160 @@ EXEC_AGENT_WEB_SESSION_TIMEOUT_MINUTES=720
 | `/shell` | Run allowlisted shell commands inside the configured shell workspace and view command history. |
 
 The UI uses Bootstrap responsive components, a persistent dark-mode toggle, and Rich-inspired readable cards/preformatted output for chat, task, and shell streams. File browsing, shell execution, FastCRW, uploads, and ingestion continue to respect the same safety settings used by the CLI, including allowed directories, upload extensions, command allowlists, and autonomy/HITL gates.
+
+## Coherent product integration
+
+The terminal CLI and Bootstrap web UI are two clients for the same backend service layer in `exec_agent.services`. The shared backend routes all filesystem, shell, FastCRW, memory, document, image, model-adjacent RAG, and autonomous-task operations through one policy boundary before delegating to lower-level tool modules. This avoids duplicated business logic: CLI commands call the backend facade, FastAPI routes call the same facade, and both persist to the same SQLite/vector-store locations under `EXEC_AGENT_DATA_DIR`.
+
+Every tool path respects the effective runtime profile and safety settings:
+
+- `EXEC_AGENT_RUNTIME_PROFILE` controls the default model/device/web/FastCRW posture.
+- `EXEC_AGENT_AUTONOMY_LEVEL` controls whether actions are suggestions, approval-blocked, limited autonomous, or fully autonomous.
+- `EXEC_AGENT_HITL` and `EXEC_AGENT_ACTIONS_HITL` keep human approval in the loop for side effects.
+- `EXEC_AGENT_ALLOWED_DIRS`, `EXEC_AGENT_READONLY_DIRS`, and `EXEC_AGENT_BLOCKED_PATHS` constrain filesystem access.
+- `EXEC_AGENT_SHELL_ENABLED`, `EXEC_AGENT_SHELL_WORKDIR`, `EXEC_AGENT_SHELL_ALLOWLIST`, and `EXEC_AGENT_SHELL_DENYLIST` constrain shell execution.
+- Profile and model settings are shown in both `exec-agent config`/`exec-agent models status` and the web `/settings` and `/models` pages.
+
+## Makefile workflow
+
+The repository now ships a normal checked-in Makefile for the common product lifecycle:
+
+| Target | Command | Purpose |
+| --- | --- | --- |
+| Install | `make install` | Run `uv sync --extra dev`. |
+| Test | `make test` | Run the full pytest suite. |
+| CLI | `make run ARGS="chat"` | Run `exec-agent`; defaults to chat. |
+| Web UI | `make web` | Run `exec-agent web serve`; pass `WEB_ARGS="set-password"` for setup. |
+| FastCRW | `make fastcrw-up` | Start the self-hosted FastCRW container. |
+| Eval | `make eval` | Run deterministic offline evals. |
+
+## Linux setup
+
+```bash
+git clone <repository-url>
+cd Local-executive-assistant-agent
+make install
+cp .env.cpu.example .env
+make test
+make run ARGS="config"
+```
+
+If you prefer direct commands, every Makefile target delegates to `uv run exec-agent ...` or Docker Compose and can be run manually.
+
+## CPU mode
+
+Use CPU mode for the safest and most portable local setup:
+
+```bash
+cp .env.cpu.example .env
+printf '\nEXEC_AGENT_RUNTIME_PROFILE=cpu-safe\nEXEC_AGENT_DEVICE=cpu\nEXEC_AGENT_MODEL_PRESET=cpu_only\n' >> .env
+make run ARGS="models status"
+make run ARGS="chat"
+```
+
+CPU-safe mode disables online research by default and keeps work local unless you explicitly choose a research profile.
+
+## GPU mode under 16GB VRAM
+
+For consumer NVIDIA GPUs, keep the registry budget at or below your hardware size and prefer the `low_vram`, `default`, or `coding` presets:
+
+```bash
+nvidia-smi
+cp .env.gpu.example .env
+printf '\nEXEC_AGENT_DEVICE=auto\nEXEC_AGENT_MAX_VRAM_GB=16\nEXEC_AGENT_MODEL_PRESET=low_vram\n' >> .env
+make run ARGS="models status"
+make run ARGS="models pull-defaults"
+```
+
+Recommended posture under 16GB VRAM:
+
+- Use `EXEC_AGENT_MODEL_PRESET=low_vram` for 8GB cards.
+- Use `EXEC_AGENT_MODEL_PRESET=default` for 12GB cards.
+- Use `EXEC_AGENT_MODEL_PRESET=coding` or `quality` only when quantized 7B models fit comfortably.
+- Keep `EXEC_AGENT_MODEL_AUTO_PULL=false` until you have reviewed selected models with `make run ARGS="models status"`.
+
+## Self-hosted FastCRW
+
+FastCRW is optional and should be self-hosted. Enable it only for research workflows:
+
+```bash
+cp .env.research.example .env
+printf '\nEXEC_AGENT_RUNTIME_PROFILE=research-online\nFASTCRW_ENABLED=true\nFASTCRW_BASE_URL=http://localhost:3002\nFASTCRW_API_PREFIX=/v1\n' >> .env
+make fastcrw-up
+make fastcrw-health
+make run ARGS="web search 'latest AI policy news' --max-results 3"
+```
+
+Set `EXEC_AGENT_LOCAL_ONLY=true` to override any profile and disable web, scrape, and crawl behavior.
+
+## Web UI setup
+
+Configure a password first, then start the browser UI:
+
+```bash
+make web WEB_ARGS="set-password"
+make web
+```
+
+Open <http://localhost:8080>. For remote access, place the service behind your own TLS reverse proxy and set:
+
+```bash
+EXEC_AGENT_WEB_HOST=0.0.0.0
+EXEC_AGENT_WEB_PORT=8080
+EXEC_AGENT_WEB_REVERSE_PROXY_TLS=true
+EXEC_AGENT_WEB_COOKIE_SECURE=true
+EXEC_AGENT_WEB_SESSION_TIMEOUT_MINUTES=720
+```
+
+## Password setup
+
+`exec-agent web set-password` writes an Argon2 hash to `.env` as `EXEC_AGENT_WEB_PASSWORD_HASH`; plaintext passwords are never stored. It also creates `EXEC_AGENT_WEB_SESSION_SECRET` when missing. Rotate the password by running the command again and restarting the web UI.
+
+## Autonomous task safety
+
+Autonomous execution is intentionally conservative. Use these controls before letting the agent act:
+
+```bash
+EXEC_AGENT_AUTONOMY_LEVEL=human_approved
+EXEC_AGENT_ACTIONS_HITL=true
+EXEC_AGENT_MAX_AUTONOMOUS_STEPS=25
+EXEC_AGENT_REQUIRE_APPROVAL_FOR_DANGEROUS_COMMANDS=true
+EXEC_AGENT_TASK_TIMEOUT_SECONDS=1800
+```
+
+Levels:
+
+- `off`: no autonomous action; plans only.
+- `suggest_only`: produce suggestions without side effects.
+- `human_approved`: store a plan and wait for review.
+- `autonomous_limited`: allow bounded approved file/shell actions within configured policies.
+- `autonomous_full`: highest trust setting; still constrained by allowed directories, shell allow/deny lists, and loop safeguards.
+
+Review `/tasks`, `/audit`, `exec-agent task status`, and shell history after any autonomous run.
+
+## Allowed directory configuration
+
+Filesystem and shell tools never get broad host access by default. Configure narrow roots:
+
+```bash
+mkdir -p workspace data uploads
+cat >> .env <<'EOF'
+EXEC_AGENT_ALLOWED_DIRS=./workspace,./data,./uploads
+EXEC_AGENT_READONLY_DIRS=./data/reference
+EXEC_AGENT_BLOCKED_PATHS=/etc,/root,/home/*/.ssh,/home/*/.gnupg
+EXEC_AGENT_SHELL_WORKDIR=./workspace
+EXEC_AGENT_SHELL_ALLOWLIST=python,python3,pytest,git,find,ls,cat,pwd,mkdir,cp,mv,rm,touch,sed,awk,curl
+EXEC_AGENT_SHELL_DENYLIST=sudo,su,chmod,chown,dd,mkfs,mount,umount,ssh,scp,rsync,shutdown,reboot,systemctl,service,docker
+EOF
+```
+
+Use `./workspace` for files the agent may edit, `./uploads` for browser uploads, and `./data` for local persistent stores.
+
+## Example end-to-end workflow
+
+1. **Upload a PDF**: start the web UI with `make web`, open `/files`, upload `board-pack.pdf`, and follow the redirect to `/ingest`.
+2. **Ask questions**: open `/chat` or run `make run ARGS="ask 'What are the main risks in the uploaded board pack?'"`.
+3. **Run web research**: enable `research-online`, start FastCRW with `make fastcrw-up`, then use `/web` or `make run ARGS="web search 'competitor market update' --max-results 5"`.
+4. **Create a task plan**: run `make run ARGS="task run 'Prepare a board prep plan using the uploaded PDF and web research'"` with `EXEC_AGENT_AUTONOMY_LEVEL=human_approved` to store a reviewable plan.
+5. **Let the agent edit files in `./workspace`**: after reviewing the plan, set `EXEC_AGENT_AUTONOMY_LEVEL=autonomous_limited`, keep `EXEC_AGENT_ALLOWED_DIRS=./workspace,./data,./uploads`, and run a bounded task such as `make run ARGS="task run 'Create ./workspace/board-brief.md from the approved plan' --autonomous"`.
+6. **Review the audit log**: inspect `/audit`, `/tasks/<task_id>/report`, `make run ARGS="task status <task_id>"`, and `make run ARGS="shell history"` before using the output.

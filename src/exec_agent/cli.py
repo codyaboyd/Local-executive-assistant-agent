@@ -18,14 +18,13 @@ from exec_agent.safety import UserFacingError, validate_local_file
 from exec_agent.chat import TerminalChat
 from exec_agent.models.llm import generate_text
 from exec_agent.sessions import ChatSessionStore, PersistedChatSession
-from exec_agent.tasks import AutonomousTaskRunner, TaskStore
+from exec_agent.tasks import TaskStore
 from app.tools.pdf import ingest_pdf as ingest_pdf_file
 from app.tools.docx import ingest_docx as ingest_docx_file
 from app.tools.image import ask_image as ask_image_file
 from app.tools.image import describe_image as describe_image_file
 from app.tools import web_fastcrw
-from app.tools import filesystem as fs_tools
-from app.tools import shell as shell_tools
+from exec_agent.services import get_backend
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.memory.vector_store import VectorSearchResult, VectorStore
 from app.evals import render_results_table, run_evals
@@ -72,7 +71,7 @@ def shell_run(
     """Run a safe command and persist its result in shell history."""
 
     try:
-        result = shell_tools.run_command(command, cwd=cwd, timeout=timeout)
+        result = get_backend().run_shell(command, cwd=cwd, timeout=timeout)
     except (UserFacingError, OSError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -89,7 +88,7 @@ def shell_history(limit: int = typer.Option(50, "--limit", "-n", min=1, help="Nu
     table = Table(title="Shell Command History")
     for column in ["ID", "Exit", "Duration", "CWD", "Command", "Finished"]:
         table.add_column(column)
-    for item in shell_tools.history(limit=limit):
+    for item in get_backend().shell_history(limit=limit):
         table.add_row(
             str(item.id),
             str(item.exit_code),
@@ -106,7 +105,7 @@ def fs_list(path: str = typer.Argument("./workspace", help="Allowed directory to
     """List files in an allowed directory."""
 
     try:
-        for entry in fs_tools.list_dir(path):
+        for entry in get_backend().list_files(path):
             console.print(entry)
     except (FileNotFoundError, UserFacingError, OSError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -118,7 +117,7 @@ def fs_read(path: str = typer.Argument(..., help="Allowed file to read.")) -> No
     """Read a file from an allowed directory."""
 
     try:
-        console.print(fs_tools.read_file(path))
+        console.print(get_backend().read_file(path))
     except (FileNotFoundError, UserFacingError, OSError, UnicodeError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -129,7 +128,7 @@ def fs_search(query: str, root: str = typer.Argument("./workspace", help="Allowe
     """Search files under an allowed directory for a keyword."""
 
     try:
-        for match in fs_tools.search_files(query, root):
+        for match in get_backend().search_files(query, root):
             console.print(match)
     except (FileNotFoundError, UserFacingError, OSError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -351,7 +350,7 @@ def _generate_workflow(title: str, prompt: str, role: str = ModelRole.GENERAL_RE
 
 def _web_research_context(topic: str, max_results: int) -> str:
     try:
-        results = web_fastcrw.search_web(topic, max_results=max_results)
+        results = get_backend().search_web(topic, max_results=max_results)
     except web_fastcrw.FastCRWError as exc:
         return f"Web search unavailable: {exc}"
     lines = []
@@ -383,8 +382,7 @@ def task_run(
 
     settings = get_settings()
     level = "autonomous_full" if autonomous else settings.autonomy_level
-    runner = AutonomousTaskRunner(progress=lambda message: console.print(f"[cyan]{message}[/cyan]"))
-    task = runner.run(description, autonomy_level=level)
+    task = get_backend().run_task(description, autonomy_level=level, progress=lambda message: console.print(f"[cyan]{message}[/cyan]"))
     console.print(f"Task ID: {task.task_id}")
     console.print(f"Status: {task.status}")
     if task.final_summary:
@@ -907,7 +905,7 @@ def web_health() -> None:
     """Check the configured self-hosted FastCRW server."""
 
     try:
-        result = web_fastcrw.health_check()
+        result = get_backend().web_health()
     except web_fastcrw.FastCRWError as exc:
         _handle_fastcrw_error(exc)
     console.print(result)
@@ -918,7 +916,7 @@ def web_search(query: str, max_results: int = typer.Option(None, "--max-results"
     """Search with the configured self-hosted FastCRW server."""
 
     try:
-        results = web_fastcrw.search_web(query, max_results=max_results or get_settings().fastcrw_max_results)
+        results = get_backend().search_web(query, max_results=max_results or get_settings().fastcrw_max_results)
     except web_fastcrw.FastCRWError as exc:
         _handle_fastcrw_error(exc)
     table = Table(title=f"FastCRW Search: {query}")
@@ -935,7 +933,7 @@ def web_scrape(url: str) -> None:
     """Scrape a URL with self-hosted FastCRW and store page content in vector DB."""
 
     try:
-        page = web_fastcrw.scrape_url(url)
+        page = get_backend().scrape_url(url)
     except web_fastcrw.FastCRWError as exc:
         _handle_fastcrw_error(exc)
     console.print(f"[green]Scraped and stored:[/green] {page.title} ({page.url})")
@@ -954,7 +952,7 @@ def web_crawl(url: str, limit: int = typer.Option(10, "--limit", min=1, help="Ma
             console.print("[yellow]Crawl rejected.[/yellow]")
             raise typer.Exit(code=1)
     try:
-        pages = web_fastcrw.crawl_url(url, limit=limit)
+        pages = get_backend().crawl_url(url, limit=limit)
     except web_fastcrw.FastCRWError as exc:
         _handle_fastcrw_error(exc)
     console.print(f"[green]Crawled and stored {len(pages)} pages from {url}.[/green]")

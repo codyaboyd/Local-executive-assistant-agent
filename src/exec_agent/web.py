@@ -19,17 +19,13 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from app.memory.long_term import LongTermMemoryStore
-from app.memory.vector_store import VectorStore
 from app.models.registry import REGISTRY, benchmark_selection
-from app.tools import filesystem
-from app.tools.docx import ingest_docx
-from app.tools.pdf import chunk_text, ingest_pdf
-from app.tools.shell import history as shell_history, run_command
-from app.tools.web_fastcrw import FastCRWError, health_check, search_web
+from app.tools.web_fastcrw import FastCRWError
+from exec_agent.services import get_backend
 from exec_agent.chat import ChatSession, default_streamer
 from exec_agent.config import RUNTIME_PROFILES, get_settings
 from exec_agent.safety import UserFacingError
-from exec_agent.tasks import AutonomousTaskRunner, TaskStore
+from exec_agent.tasks import TaskStore
 
 APP_DIR = Path(__file__).parent
 STATIC_DIR = APP_DIR / "static"
@@ -149,7 +145,7 @@ def create_app() -> FastAPI:
                 TASK_EVENTS.setdefault(created["id"], queue)
             queue.put_nowait(msg)
         def run() -> None:
-            task = AutonomousTaskRunner(progress=progress).run(description, autonomy_level=autonomy_level)  # type: ignore[arg-type]
+            task = get_backend().run_task(description, autonomy_level=autonomy_level, progress=progress)  # type: ignore[arg-type]
             created["id"] = task.task_id
             TASK_EVENTS[task.task_id] = queue
             queue.put_nowait(f"Task {task.task_id} {task.status}")
@@ -228,7 +224,7 @@ def create_app() -> FastAPI:
     async def files(request: Request, path: str = ".") -> HTMLResponse:
         _require_login(request)
         try:
-            entries = filesystem.list_dir(path)
+            entries = get_backend().list_files(path)
             listing = "".join(f"<li class='list-group-item'>{html.escape(e)}</li>" for e in entries)
         except UserFacingError as exc:
             listing = f"<div class='alert alert-danger'>{html.escape(str(exc))}</div>"
@@ -296,7 +292,7 @@ def create_app() -> FastAPI:
         body = _web_ui(q, "")
         if q:
             try:
-                results = search_web(q, get_settings().fastcrw_max_results)
+                results = get_backend().search_web(q, get_settings().fastcrw_max_results)
                 items = "".join(f"<li class='list-group-item'><strong>{html.escape(str(r.get('title','Untitled')))}</strong><br><code>{html.escape(str(r.get('url','')))}</code><p>{html.escape(str(r.get('description', r.get('content','')))[:500])}</p></li>" for r in results)
                 body = _web_ui(q, items)
             except FastCRWError as exc:
@@ -312,7 +308,7 @@ def create_app() -> FastAPI:
     async def run_shell(request: Request, command: str = Form(...), cwd: str = Form("")) -> HTMLResponse:
         _require_login(request)
         try:
-            result = run_command(command, cwd or None)
+            result = get_backend().run_shell(command, cwd or None)
             output = f"<pre class='terminal'>{html.escape(result.stdout + result.stderr)}</pre>"
         except UserFacingError as exc:
             output = f"<div class='alert alert-danger'>{html.escape(str(exc))}</div>"
@@ -580,7 +576,7 @@ def _memory_ui(q: str, rows: str, request: Request) -> str:
 def _web_ui(q: str, results: str) -> str:
     status = ""
     try:
-        status = f"<span class='badge text-bg-success'>{html.escape(str(health_check().get('status', 'ok')))}</span>"
+        status = f"<span class='badge text-bg-success'>{html.escape(str(get_backend().web_health().get('status', 'ok')))}</span>"
     except Exception as exc:  # noqa: BLE001
         status = f"<span class='badge text-bg-warning'>{html.escape(str(exc))}</span>"
     return f"<h1>FastCRW web search {status}</h1><form class='input-group mb-3'><input name='q' value='{html.escape(q)}' class='form-control' placeholder='Search the web'><button class='btn btn-primary'>Search</button></form><ul class='list-group'>{results}</ul>"
@@ -591,7 +587,7 @@ def _shell_ui(output: str, rows: str, request: Request) -> str:
 
 
 def _history_rows() -> str:
-    return "".join(f"<tr><td>{r.id}</td><td><code>{html.escape(r.command)}</code></td><td>{r.exit_code}</td><td>{r.started_at}</td></tr>" for r in shell_history(25))
+    return "".join(f"<tr><td>{r.id}</td><td><code>{html.escape(r.command)}</code></td><td>{r.exit_code}</td><td>{r.started_at}</td></tr>" for r in get_backend().shell_history(25))
 
 
 def _validate_upload(filename: str) -> None:
@@ -602,20 +598,10 @@ def _validate_upload(filename: str) -> None:
 
 
 def _ingest_path(path: Path) -> int:
-    suffix = path.suffix.lower()
-    if suffix == ".pdf":
-        return ingest_pdf(path)
-    if suffix == ".docx":
-        return ingest_docx(path)
-    if suffix in {".txt", ".md"}:
-        text = path.read_text(encoding="utf-8")
-        chunks = chunk_text(text)
-        VectorStore().add_documents(chunks, {"source": path.name, "file_type": suffix.lstrip(".")})
-        return len(chunks)
-    if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-        VectorStore().add_documents([f"Uploaded image: {path.name}"], {"source": path.name, "file_type": suffix.lstrip(".")})
-        return 1
-    raise HTTPException(400, f"Unsupported ingest type: {suffix}")
+    try:
+        return get_backend().ingest_path(path)
+    except UserFacingError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 app = create_app()

@@ -202,3 +202,56 @@ def test_model_role_switch_logs_at_debug(caplog) -> None:
     classify_intent({"user_input": "Debug this Python function", "model_role": "general_reasoning"})
 
     assert "Switching model role" in caplog.text
+
+
+def test_autonomous_router_exposes_tools_and_trace() -> None:
+    graph = build_graph()
+    result = graph.invoke({"messages": [], "user_input": "Inspect files and run tests", "streamer": lambda prompt: ["done"]})
+
+    assert result["available_tools"] == [
+        "filesystem",
+        "shell",
+        "vector_search",
+        "memory",
+        "pdf",
+        "docx",
+        "image",
+        "fastcrw_web",
+    ]
+    assert [entry["node"] for entry in result["task_trace"]] == [
+        "task_planner",
+        "executor",
+        "critic_reviewer",
+        "completion_checker",
+    ]
+    assert result["executor_decision"]["actions"] == ["inspect_files", "run_commands"]
+    assert result["final_summary"]["what_was_done"] == "done"
+    assert set(result["final_summary"]) == {"what_was_done", "files_changed", "commands_run", "unresolved_issues", "task_trace"}
+
+
+def test_autonomous_router_enforces_max_steps() -> None:
+    result = build_graph().invoke(
+        {"messages": [], "user_input": "Search the web for current docs", "streamer": lambda prompt: ["done"], "max_steps": 1, "autonomous_mode": True}
+    )
+
+    assert result["step_count"] == 1
+    assert result["completion_status"]["max_steps_reached"] is True
+    assert result["executor_decision"]["actions"] == ["stop"]
+
+
+def test_autonomous_failure_recovery_can_loop_until_max_steps() -> None:
+    result = build_graph().invoke(
+        {
+            "messages": [],
+            "user_input": "Search the web for current docs",
+            "streamer": lambda prompt: ["done"],
+            "autonomous_mode": True,
+            "max_steps": 2,
+            "web_access_enabled": False,
+        }
+    )
+
+    assert result["step_count"] == 2
+    assert result["failure_count"] == 1
+    assert "failure_recovery" in [entry["node"] for entry in result["task_trace"]]
+    assert result["completion_status"]["max_steps_reached"] is True

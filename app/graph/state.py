@@ -78,3 +78,17 @@ class AssistantState(TypedDict, total=False):
     secondary_model_roles: list[str]
     debug: bool
     progress_callback: Callable[[dict[str, Any]], None]
+    available_tools: list[str]
+    task_plan: list[dict[str, Any]]
+    task_trace: list[dict[str, Any]]
+    autonomous_mode: bool
+    max_steps: int
+    step_count: int
+    executor_decision: dict[str, Any]
+    review: dict[str, Any]
+    completion_status: dict[str, Any]
+    failure_count: int
+    unresolved_issues: list[str]
+    files_changed: list[str]
+    commands_run: list[str]
+    final_summary: dict[str, Any]

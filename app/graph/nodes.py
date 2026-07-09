@@ -510,7 +510,14 @@ def save_context(state: AssistantState) -> AssistantState:
     if response:
         messages.append({"role": "assistant", "content": response})
     summary = _summarize_messages(messages)
-    return {"messages": messages, "conversation_summary": summary}
+    final_summary = {
+        "what_was_done": response.strip()[:500],
+        "files_changed": state.get("files_changed", []),
+        "commands_run": state.get("commands_run", []),
+        "unresolved_issues": state.get("unresolved_issues", []),
+        "task_trace": state.get("task_trace", []),
+    }
+    return {"messages": messages, "conversation_summary": summary, "final_summary": final_summary}
 
 
 def route_after_approval(state: AssistantState) -> str:
@@ -552,3 +559,166 @@ image_question_tool = _guard_tool("image.analyze", image_question_tool)
 memory_update_tool = _guard_tool("memory.update", memory_update_tool)
 task_planning_tool = _guard_tool("planner.create_plan", task_planning_tool)
 fallback_tool = _guard_tool("fallback.general_chat", fallback_tool)
+
+AVAILABLE_AUTONOMOUS_TOOLS = [
+    "filesystem",
+    "shell",
+    "vector_search",
+    "memory",
+    "pdf",
+    "docx",
+    "image",
+    "fastcrw_web",
+]
+
+_DECISION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("inspect_files", ("file", "repo", "code", "read", "inspect", "pdf", "docx", "image")),
+    ("run_commands", ("run", "test", "command", "shell", "execute", "pytest", "make")),
+    ("search_docs", ("document", "docs", "policy", "pdf", "docx", "vector")),
+    ("search_web", ("web", "internet", "latest", "current", "browse", "online")),
+    ("write_edit_files", ("write", "edit", "change", "implement", "fix", "create", "update")),
+    ("ask_user_approval", ("approval", "permission", "confirm", "delete", "destructive", "credential")),
+)
+
+
+def _trace(state: AssistantState, node: str, action: str, details: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    entry = {
+        "step": int(state.get("step_count", 0)),
+        "node": node,
+        "action": action,
+        "details": details or {},
+    }
+    return [*state.get("task_trace", []), entry]
+
+
+def task_planner_node(state: AssistantState) -> AssistantState:
+    """Create or refresh an autonomous task plan from the current goal and context."""
+
+    logger.info("Running graph node: task_planner_node")
+    _emit_progress(state, "autonomy", "Planning autonomous task", node="task_planner_node")
+    user_input = state.get("user_input", "")
+    tool_name = state.get("tool_name") or "general_chat.respond"
+    plan = [
+        {"id": 1, "description": "Understand the user goal and loaded context.", "status": "completed"},
+        {"id": 2, "description": f"Select tools from {', '.join(AVAILABLE_AUTONOMOUS_TOOLS)}.", "status": "completed"},
+        {"id": 3, "description": "Execute the next safe action or prepare a response.", "status": "pending"},
+        {"id": 4, "description": "Review output and decide whether to iterate, recover, ask approval, or stop.", "status": "pending"},
+    ]
+    return {
+        "available_tools": AVAILABLE_AUTONOMOUS_TOOLS,
+        "task_plan": plan,
+        "task_trace": _trace(state, "task_planner", "planned", {"goal": user_input, "initial_tool": tool_name}),
+    }
+
+
+def executor_node(state: AssistantState) -> AssistantState:
+    """Choose the next autonomous action while keeping side effects behind existing tools/HITL."""
+
+    logger.info("Running graph node: executor_node")
+    _emit_progress(state, "autonomy", "Choosing next execution action", node="executor_node")
+    step_count = int(state.get("step_count", 0)) + 1
+    max_steps = int(state.get("max_steps", 8))
+    lowered = state.get("user_input", "").lower()
+    decisions = [name for name, keywords in _DECISION_KEYWORDS if any(keyword in lowered for keyword in keywords)]
+    if not decisions:
+        decisions = ["stop"]
+    if step_count >= max_steps:
+        decisions = ["stop"]
+    tool_map = {
+        "inspect_files": "filesystem",
+        "run_commands": "shell",
+        "search_docs": "vector_search",
+        "search_web": "fastcrw_web",
+        "write_edit_files": "filesystem",
+        "ask_user_approval": "human_approval",
+        "stop": "local_llm",
+    }
+    decision = {
+        "step": step_count,
+        "actions": decisions,
+        "tools": sorted({tool_map[action] for action in decisions}),
+        "reason": "Keyword and context based autonomous router decision.",
+    }
+    return {
+        "step_count": step_count,
+        "executor_decision": decision,
+        "task_trace": _trace({**state, "step_count": step_count}, "executor", "decided", decision),
+    }
+
+
+def critic_reviewer_node(state: AssistantState) -> AssistantState:
+    """Review the planned/executed action for safety, usefulness, and missing context."""
+
+    logger.info("Running graph node: critic_reviewer_node")
+    _emit_progress(state, "autonomy", "Reviewing execution decision", node="critic_reviewer_node")
+    decision = state.get("executor_decision", {})
+    issues: list[str] = []
+    if "search_web" in decision.get("actions", []) and not state.get("web_access_enabled", False):
+        issues.append("Web search was requested but web access is disabled.")
+    if "run_commands" in decision.get("actions", []) and state.get("hitl_enabled", False):
+        issues.append("Command execution may require human approval.")
+    approved = not issues
+    review = {"approved": approved, "issues": issues, "decision": decision}
+    return {
+        "review": review,
+        "unresolved_issues": [*state.get("unresolved_issues", []), *issues],
+        "task_trace": _trace(state, "critic_reviewer", "reviewed", review),
+    }
+
+
+def completion_checker_node(state: AssistantState) -> AssistantState:
+    """Decide whether the autonomous loop can stop or should recover/iterate."""
+
+    logger.info("Running graph node: completion_checker_node")
+    _emit_progress(state, "autonomy", "Checking completion", node="completion_checker_node")
+    step_count = int(state.get("step_count", 0))
+    max_steps = int(state.get("max_steps", 8))
+    review = state.get("review", {})
+    autonomous = state.get("autonomous_mode", False)
+    needs_recovery = bool(review.get("issues"))
+    complete = (not autonomous) or step_count >= max_steps or not needs_recovery
+    status = {
+        "complete": complete,
+        "needs_recovery": needs_recovery and step_count < max_steps,
+        "max_steps_reached": step_count >= max_steps,
+        "step_count": step_count,
+        "max_steps": max_steps,
+    }
+    return {"completion_status": status, "task_trace": _trace(state, "completion_checker", "checked", status)}
+
+
+def failure_recovery_node(state: AssistantState) -> AssistantState:
+    """Record a recovery action and switch to a safe response path after failed review."""
+
+    logger.info("Running graph node: failure_recovery_node")
+    _emit_progress(state, "autonomy", "Recovering from blocked action", node="failure_recovery_node")
+    failure_count = int(state.get("failure_count", 0)) + 1
+    issues = state.get("review", {}).get("issues", [])
+    prompt = _tool_response_prompt(
+        state,
+        "failure_recovery",
+        "Some autonomous actions were blocked or unavailable. Explain the limitation and continue with the best safe answer. "
+        f"Issues: {issues}",
+    )
+    return {
+        "failure_count": failure_count,
+        "prompt": prompt,
+        "task_trace": _trace(state, "failure_recovery", "recovered", {"failure_count": failure_count, "issues": issues}),
+    }
+
+
+def route_after_completion_check(state: AssistantState) -> str:
+    status = state.get("completion_status", {})
+    if status.get("needs_recovery"):
+        return "failure_recovery"
+    return "human_approval"
+
+
+def route_after_failure_recovery(state: AssistantState) -> str:
+    """Continue autonomous recovery loops until completion or max-step enforcement stops them."""
+
+    if not state.get("autonomous_mode", False):
+        return "human_approval"
+    if int(state.get("step_count", 0)) >= int(state.get("max_steps", 8)):
+        return "human_approval"
+    return "executor"

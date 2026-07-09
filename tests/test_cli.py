@@ -410,3 +410,25 @@ def test_task_run_status_history_cancel_cli(tmp_path, monkeypatch) -> None:
     assert cancel_result.exit_code == 0
     assert "Cancelled task" in cancel_result.output
     get_settings.cache_clear()
+
+
+def test_fs_cli_list_read_search(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "file.txt").write_text("keyword content", encoding="utf-8")
+    monkeypatch.setenv("EXEC_AGENT_ALLOWED_DIRS", str(workspace))
+    from exec_agent.config import get_settings
+
+    get_settings.cache_clear()
+    list_result = runner.invoke(app, ["fs", "list", str(workspace)])
+    assert list_result.exit_code == 0
+    assert "file.txt" in list_result.output
+
+    read_result = runner.invoke(app, ["fs", "read", str(workspace / "file.txt")])
+    assert read_result.exit_code == 0
+    assert "keyword content" in read_result.output
+
+    search_result = runner.invoke(app, ["fs", "search", "keyword", str(workspace)])
+    assert search_result.exit_code == 0
+    assert "file.txt" in search_result.output
+    get_settings.cache_clear()

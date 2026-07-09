@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     fastcrw_max_results: int = Field(default=5, ge=1, validation_alias="FASTCRW_MAX_RESULTS")
     fastcrw_enable_scrape: bool = Field(default=True, validation_alias="FASTCRW_ENABLE_SCRAPE")
     fastcrw_enable_crawl: bool = Field(default=False, validation_alias="FASTCRW_ENABLE_CRAWL")
+    allowed_dirs: str = Field(default="./workspace,./data,./uploads", validation_alias="EXEC_AGENT_ALLOWED_DIRS")
+    readonly_dirs: str = Field(default="", validation_alias="EXEC_AGENT_READONLY_DIRS")
+    blocked_paths: str = Field(default="/etc,/root,/home/*/.ssh,/home/*/.gnupg", validation_alias="EXEC_AGENT_BLOCKED_PATHS")
+    max_file_size_mb: int = Field(default=25, ge=1, validation_alias="EXEC_AGENT_MAX_FILE_SIZE_MB")
 
     def model_post_init(self, __context: object) -> None:
         """Apply named runtime profile controls after environment loading."""

@@ -4,11 +4,14 @@ from pathlib import Path
 import inspect
 
 import typer
+import secrets
+import getpass
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from app.models.registry import ModelRole, REGISTRY, benchmark_selection, pull_model, select_model
+from exec_agent.web import hash_password
 from exec_agent.config import RUNTIME_PROFILES, get_settings
 from exec_agent.logging import configure_logging
 from exec_agent.safety import UserFacingError, validate_local_file
@@ -823,6 +826,81 @@ def _handle_fastcrw_error(exc: Exception) -> None:
     console.print(f"[red]{exc}[/red]")
     raise typer.Exit(code=1) from exc
 
+
+
+@web_app.command("serve")
+def web_serve() -> None:
+    """Serve the authenticated Bootstrap web UI."""
+
+    import uvicorn
+
+    settings = get_settings()
+    if not settings.web_enabled:
+        console.print("[yellow]EXEC_AGENT_WEB_ENABLED is false; refusing to serve the web UI.[/yellow]")
+        raise typer.Exit(code=1)
+    if settings.web_host == "0.0.0.0" and not settings.web_reverse_proxy_tls:
+        console.print("[yellow]Warning: web host is 0.0.0.0 without EXEC_AGENT_WEB_REVERSE_PROXY_TLS=true. Use a TLS reverse proxy before exposing this UI.[/yellow]")
+    if not settings.web_password_hash:
+        console.print("[red]No web password hash configured. Run `exec-agent web set-password` first.[/red]")
+        raise typer.Exit(code=1)
+    uvicorn.run("exec_agent.web:app", host=settings.web_host, port=settings.web_port, reload=False)
+
+
+@web_app.command("set-password")
+def web_set_password(env_file: Path = typer.Option(Path(".env"), "--env-file", help="Environment file to update.")) -> None:
+    """Hash a web UI password and write only the hash to the env file."""
+
+    password = getpass.getpass("Web UI password: ")
+    confirm = getpass.getpass("Confirm web UI password: ")
+    if not password or password != confirm:
+        console.print("[red]Password is empty or does not match confirmation.[/red]")
+        raise typer.Exit(code=1)
+    values = {
+        "EXEC_AGENT_WEB_ENABLED": "true",
+        "EXEC_AGENT_WEB_HOST": "0.0.0.0",
+        "EXEC_AGENT_WEB_PORT": "8080",
+        "EXEC_AGENT_WEB_PASSWORD_HASH": hash_password(password),
+        "EXEC_AGENT_WEB_SESSION_SECRET": secrets.token_urlsafe(48),
+        "EXEC_AGENT_WEB_SESSION_TIMEOUT_MINUTES": "720",
+    }
+    _update_env_file(env_file, values)
+    console.print(f"[green]Updated {env_file} with an Argon2 password hash and signed-session secret.[/green]")
+
+
+@web_app.command("status")
+def web_status() -> None:
+    """Show web UI configuration status without revealing secrets."""
+
+    settings = get_settings()
+    table = Table(title="Web UI Status")
+    table.add_column("Setting")
+    table.add_column("Value")
+    table.add_row("enabled", str(settings.web_enabled))
+    table.add_row("bind", f"{settings.web_host}:{settings.web_port}")
+    table.add_row("password_hash_configured", str(bool(settings.web_password_hash)))
+    table.add_row("session_secret_configured", str(bool(settings.web_session_secret)))
+    table.add_row("session_timeout_minutes", str(settings.web_session_timeout_minutes))
+    table.add_row("reverse_proxy_tls", str(settings.web_reverse_proxy_tls))
+    console.print(table)
+    if settings.web_host == "0.0.0.0" and not settings.web_reverse_proxy_tls:
+        console.print("[yellow]Warning: listening on all interfaces without a configured TLS reverse proxy.[/yellow]")
+
+
+def _update_env_file(path: Path, values: dict[str, str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    output: list[str] = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
+        if key in values:
+            output.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            output.append(line)
+    for key, value in values.items():
+        if key not in seen:
+            output.append(f"{key}={value}")
+    path.write_text("\n".join(output) + "\n", encoding="utf-8")
 
 @web_app.command("health")
 def web_health() -> None:

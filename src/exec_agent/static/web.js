@@ -1,0 +1,7 @@
+(function(){const saved=localStorage.getItem('theme');if(saved)document.documentElement.setAttribute('data-bs-theme',saved);})();
+function toggleTheme(){const cur=document.documentElement.getAttribute('data-bs-theme')==='dark'?'light':'dark';document.documentElement.setAttribute('data-bs-theme',cur);localStorage.setItem('theme',cur)}
+function append(id,html){const el=document.getElementById(id);if(!el)return;el.insertAdjacentHTML('beforeend',html);el.scrollTop=el.scrollHeight}
+function escapeHtml(s){return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function sendChat(ev){ev.preventDefault();const input=document.getElementById('chat-message');const msg=input.value.trim();if(!msg)return;append('chat-output',`<div class="message"><strong>You</strong><br>${escapeHtml(msg)}</div><div class="message"><strong>Assistant</strong><br><span id="streaming"></span></div>`);input.value='';const stream=document.getElementById('streaming');const es=new EventSource('/api/chat/stream?message='+encodeURIComponent(msg));es.addEventListener('token',e=>{stream.textContent+=JSON.parse(e.data).chunk});es.addEventListener('done',()=>{stream.removeAttribute('id');es.close()});es.onerror=()=>es.close()}
+function streamTask(id){const es=new EventSource(`/api/tasks/${id}/events`);es.addEventListener('progress',e=>append('task-log',`<li class="list-group-item">${escapeHtml(JSON.parse(e.data).message)}</li>`));}
+function decideApproval(id,decision){fetch(`/api/approvals/${id}/${decision}`,{method:'POST'}).then(()=>location.reload())}

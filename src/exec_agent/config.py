@@ -149,6 +149,18 @@ class Settings(BaseSettings):
     readonly_dirs: str = Field(default="", validation_alias="EXEC_AGENT_READONLY_DIRS")
     blocked_paths: str = Field(default="/etc,/root,/home/*/.ssh,/home/*/.gnupg", validation_alias="EXEC_AGENT_BLOCKED_PATHS")
     max_file_size_mb: int = Field(default=25, ge=1, validation_alias="EXEC_AGENT_MAX_FILE_SIZE_MB")
+    shell_enabled: bool = Field(default=True, validation_alias="EXEC_AGENT_SHELL_ENABLED")
+    shell_workdir: Path = Field(default=Path("./workspace"), validation_alias="EXEC_AGENT_SHELL_WORKDIR")
+    shell_timeout_seconds: int = Field(default=120, ge=1, validation_alias="EXEC_AGENT_SHELL_TIMEOUT_SECONDS")
+    shell_max_output_chars: int = Field(default=20000, ge=1, validation_alias="EXEC_AGENT_SHELL_MAX_OUTPUT_CHARS")
+    shell_allowlist: str = Field(
+        default="python,python3,pip,uv,pytest,node,npm,git,grep,find,ls,cat,pwd,mkdir,cp,mv,rm,touch,sed,awk,curl",
+        validation_alias="EXEC_AGENT_SHELL_ALLOWLIST",
+    )
+    shell_denylist: str = Field(
+        default="sudo,su,chmod,chown,dd,mkfs,mount,umount,ssh,scp,rsync,shutdown,reboot,systemctl,service,docker",
+        validation_alias="EXEC_AGENT_SHELL_DENYLIST",
+    )
 
     def model_post_init(self, __context: object) -> None:
         """Apply named runtime profile controls after environment loading."""

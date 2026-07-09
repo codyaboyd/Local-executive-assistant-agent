@@ -218,23 +218,25 @@ The project includes a FastAPI-backed, Bootstrap 5 remote web interface for oper
 ### Start the web UI
 
 ```bash
+uv run exec-agent web set-password
+uv run exec-agent web serve
+# or use the standalone entry point after setting a password
 uv run exec-agent-web
-# or
-uv run uvicorn exec_agent.web:app --host 0.0.0.0 --port 8000
 ```
 
-Open <http://localhost:8000>. To require login, set a local web password before starting the server:
+Open <http://localhost:8080>. The setup command writes `EXEC_AGENT_WEB_PASSWORD_HASH` and `EXEC_AGENT_WEB_SESSION_SECRET` to your env file; plaintext web passwords are not stored.
 
 ```bash
-export EXEC_AGENT_WEB_PASSWORD='choose-a-local-password'
-uv run exec-agent-web
+EXEC_AGENT_WEB_HOST=0.0.0.0
+EXEC_AGENT_WEB_PORT=8080
+EXEC_AGENT_WEB_SESSION_TIMEOUT_MINUTES=720
 ```
 
 ### Routes and capabilities
 
 | Route | Capability |
 | --- | --- |
-| `/login`, `/logout` | Optional password-gated browser session. |
+| `/login`, `/logout` | Password-gated browser session with signed cookies, CSRF protection, and rate-limited login attempts. |
 | `/` | Mobile-friendly dashboard with dark mode and quick links. |
 | `/chat` | Streaming assistant chat over Server-Sent Events. |
 | `/tasks`, `/tasks/{task_id}` | Run autonomous tasks, view progress, and approve/reject HITL action cards. |

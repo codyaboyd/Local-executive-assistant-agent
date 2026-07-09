@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import secrets
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 from app.memory.long_term import LongTermMemoryStore
 from app.memory.vector_store import VectorStore
@@ -34,28 +38,65 @@ UPLOAD_DIR = get_settings().expanded_data_dir / "web_uploads"
 TASK_EVENTS: dict[str, asyncio.Queue[str]] = {}
 PENDING_APPROVALS: dict[str, dict[str, Any]] = {}
 CHAT_SESSION = ChatSession()
+PASSWORD_HASHER = PasswordHasher()
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 
 def create_app() -> FastAPI:
     """Create the FastAPI application with HTML pages and JSON/SSE APIs."""
 
-    app = FastAPI(title=f"{get_settings().app_name} Web UI")
-    app.add_middleware(SessionMiddleware, secret_key=_session_secret())
+    settings = get_settings()
+    app = FastAPI(title=f"{settings.app_name} Web UI")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.middleware("http")
+    async def security_middleware(request: Request, call_next):
+        try:
+            _enforce_authentication(request)
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path != "/login":
+                await _enforce_csrf(request)
+        except HTTPException as exc:
+            if exc.status_code == 303:
+                response: Response = RedirectResponse(exc.headers.get("Location", "/login"), status_code=303)
+            else:
+                response = HTMLResponse(html.escape(str(exc.detail)), status_code=exc.status_code)
+            _add_security_headers(response)
+            return response
+        response = await call_next(request)
+        _add_security_headers(response)
+        return response
+
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=_session_secret(),
+        max_age=settings.web_session_timeout_minutes * 60,
+        same_site="lax",
+        https_only=settings.web_cookie_secure,
+    )
 
     @app.get("/login", response_class=HTMLResponse)
     async def login(request: Request) -> HTMLResponse:
-        return _page("Login", _login_form(), request, public=True)
+        return _page("Login", _login_form(request), request, public=True)
 
     @app.post("/login")
-    async def do_login(request: Request, password: str = Form("")) -> RedirectResponse:
-        expected = _web_password()
-        if expected and password != expected:
+    async def do_login(request: Request, password: str = Form(""), csrf_token: str = Form("")) -> RedirectResponse:
+        token = request.session.get("csrf_token")
+        if not token or not secrets.compare_digest(str(token), csrf_token):
+            raise HTTPException(status_code=403, detail="Invalid CSRF token")
+        client = _client_id(request)
+        if _login_rate_limited(client):
+            raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+        if not _verify_password(password):
+            _record_login_failure(client)
             return RedirectResponse("/login?error=1", status_code=303)
+        LOGIN_ATTEMPTS.pop(client, None)
+        request.session.clear()
         request.session["authenticated"] = True
+        request.session["authenticated_at"] = int(time.time())
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
         return RedirectResponse("/", status_code=303)
 
-    @app.get("/logout")
+    @app.post("/logout")
     async def logout(request: Request) -> RedirectResponse:
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
@@ -96,7 +137,7 @@ def create_app() -> FastAPI:
     async def tasks(request: Request) -> HTMLResponse:
         _require_login(request)
         rows = "".join(_task_row(t) for t in TaskStore().list(50))
-        return _page("Tasks", _tasks_ui(rows), request)
+        return _page("Tasks", _tasks_ui(rows, request), request)
 
     @app.post("/tasks")
     async def create_task(background: BackgroundTasks, request: Request, description: str = Form(...), autonomy_level: str = Form("human_approved")) -> RedirectResponse:
@@ -150,7 +191,7 @@ def create_app() -> FastAPI:
             listing = "".join(f"<li class='list-group-item'>{html.escape(e)}</li>" for e in entries)
         except UserFacingError as exc:
             listing = f"<div class='alert alert-danger'>{html.escape(str(exc))}</div>"
-        return _page("Files", _files_ui(path, listing), request)
+        return _page("Files", _files_ui(path, listing, request), request)
 
     @app.post("/files/upload")
     async def upload(request: Request, upload: UploadFile = File(...)) -> RedirectResponse:
@@ -165,13 +206,13 @@ def create_app() -> FastAPI:
     @app.get("/ingest", response_class=HTMLResponse)
     async def ingest_page(request: Request, path: str = "") -> HTMLResponse:
         _require_login(request)
-        return _page("Ingest", _ingest_ui(path), request)
+        return _page("Ingest", _ingest_ui(path, request), request)
 
     @app.post("/ingest")
     async def ingest(request: Request, path: str = Form(...)) -> HTMLResponse:
         _require_login(request)
         count = _ingest_path(Path(path))
-        return _page("Ingest", f"<div class='alert alert-success'>Ingested {count} chunks from {html.escape(path)}.</div>" + _ingest_ui(path), request)
+        return _page("Ingest", f"<div class='alert alert-success'>Ingested {count} chunks from {html.escape(path)}.</div>" + _ingest_ui(path, request), request)
 
     @app.get("/memory", response_class=HTMLResponse)
     async def memory(request: Request, q: str = "") -> HTMLResponse:
@@ -179,7 +220,7 @@ def create_app() -> FastAPI:
         store = LongTermMemoryStore()
         memories = store.search(q) if q else store.list()
         rows = "".join(f"<tr><td>{m.id}</td><td>{html.escape(m.content)}</td><td>{html.escape(', '.join(m.tags))}</td><td>{html.escape(m.source)}</td></tr>" for m in memories)
-        return _page("Memory", _memory_ui(q, rows), request)
+        return _page("Memory", _memory_ui(q, rows, request), request)
 
     @app.post("/memory")
     async def add_memory(request: Request, content: str = Form(...), tags: str = Form("")) -> RedirectResponse:
@@ -200,7 +241,7 @@ def create_app() -> FastAPI:
         _require_login(request)
         s = get_settings()
         opts = "".join(f"<option {'selected' if p == s.runtime_profile else ''}>{p}</option>" for p in RUNTIME_PROFILES)
-        return _page("Settings", f"<h1>Settings</h1><form method='post'><label class='form-label'>Active profile</label><select name='profile' class='form-select'>{opts}</select><button class='btn btn-primary mt-3'>Switch active profile</button></form><pre>{html.escape(json.dumps(s.model_dump(mode='json'), indent=2, default=str))}</pre>", request)
+        return _page("Settings", f"<h1>Settings</h1><form method='post'>{_csrf_input(request)}<label class='form-label'>Active profile</label><select name='profile' class='form-select'>{opts}</select><button class='btn btn-primary mt-3'>Switch active profile</button></form><pre>{html.escape(json.dumps(s.model_dump(mode='json'), indent=2, default=str))}</pre>", request)
 
     @app.post("/settings")
     async def switch_profile(request: Request, profile: str = Form(...)) -> RedirectResponse:
@@ -224,7 +265,7 @@ def create_app() -> FastAPI:
     @app.get("/shell", response_class=HTMLResponse)
     async def shell(request: Request) -> HTMLResponse:
         _require_login(request)
-        return _page("Shell", _shell_ui("", _history_rows()), request)
+        return _page("Shell", _shell_ui("", _history_rows(), request), request)
 
     @app.post("/shell", response_class=HTMLResponse)
     async def run_shell(request: Request, command: str = Form(...), cwd: str = Form("")) -> HTMLResponse:
@@ -234,28 +275,128 @@ def create_app() -> FastAPI:
             output = f"<pre class='terminal'>{html.escape(result.stdout + result.stderr)}</pre>"
         except UserFacingError as exc:
             output = f"<div class='alert alert-danger'>{html.escape(str(exc))}</div>"
-        return _page("Shell", _shell_ui(output, _history_rows()), request)
+        return _page("Shell", _shell_ui(output, _history_rows(), request), request)
 
     return app
 
 
 
 def _session_secret() -> str:
+    configured = get_settings().web_session_secret
+    if configured:
+        return configured
     return str(get_settings().expanded_data_dir / "web-session-secret")
 
 
-def _web_password() -> str:
-    return __import__("os").environ.get("EXEC_AGENT_WEB_PASSWORD", "")
+def hash_password(password: str) -> str:
+    """Return an Argon2 hash for a plaintext password."""
+
+    return PASSWORD_HASHER.hash(password)
+
+
+def _configured_password_hash() -> str:
+    return get_settings().web_password_hash.strip()
+
+
+def _verify_password(password: str) -> bool:
+    password_hash = _configured_password_hash()
+    if not password_hash:
+        return False
+    try:
+        return PASSWORD_HASHER.verify(password_hash, password)
+    except VerifyMismatchError:
+        return False
 
 
 def _require_login(request: Request) -> None:
-    if _web_password() and not request.session.get("authenticated"):
+    _enforce_authentication(request)
+
+
+def _is_public_path(path: str) -> bool:
+    return path == "/login" or path.startswith("/static/")
+
+
+def _enforce_authentication(request: Request) -> None:
+    if _is_public_path(request.url.path):
+        return
+    if not _configured_password_hash():
+        raise HTTPException(status_code=503, detail="Web UI password is not configured. Run `exec-agent web set-password`.")
+    if not request.session.get("authenticated"):
         raise HTTPException(status_code=303, headers={"Location": "/login"})
 
 
+async def _enforce_csrf(request: Request) -> None:
+    token = request.session.get("csrf_token")
+    provided = request.headers.get("x-csrf-token")
+    if provided is None:
+        form = await request.form()
+        provided = str(form.get("csrf_token", ""))
+    if not token or not secrets.compare_digest(str(token), str(provided)):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+
+def _csrf_input(request: Request) -> str:
+    token = request.session.setdefault("csrf_token", secrets.token_urlsafe(32))
+    return f"<input type='hidden' name='csrf_token' value='{html.escape(str(token))}'>"
+
+
+def _client_id(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
+def _login_rate_limited(client: str) -> bool:
+    cutoff = time.time() - 300
+    attempts = [ts for ts in LOGIN_ATTEMPTS.get(client, []) if ts >= cutoff]
+    LOGIN_ATTEMPTS[client] = attempts
+    return len(attempts) >= 5
+
+
+def _record_login_failure(client: str) -> None:
+    LOGIN_ATTEMPTS.setdefault(client, []).append(time.time())
+
+
+def _add_security_headers(response: Response) -> None:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self' https://cdn.jsdelivr.net; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'")
+
+
 def _page(title: str, body: str, request: Request, *, public: bool = False) -> HTMLResponse:
-    nav = "" if public else """<nav class='navbar navbar-expand-lg border-bottom sticky-top bg-body'><div class='container-fluid'><a class='navbar-brand' href='/'>Exec Agent</a><button class='navbar-toggler' data-bs-toggle='collapse' data-bs-target='#nav'><span class='navbar-toggler-icon'></span></button><div id='nav' class='collapse navbar-collapse'><div class='navbar-nav'>""" + "".join(f"<a class='nav-link' href='{href}'>{label}</a>" for href,label in [('/chat','Chat'),('/tasks','Tasks'),('/files','Files'),('/memory','Memory'),('/models','Models'),('/settings','Settings'),('/web','Web'),('/shell','Shell'),('/ingest','Ingest')]) + """</div><div class='ms-auto d-flex gap-2'><button class='btn btn-outline-secondary btn-sm' onclick='toggleTheme()'>Dark mode</button><a class='btn btn-outline-danger btn-sm' href='/logout'>Logout</a></div></div></div></nav>"""
-    return HTMLResponse(f"""<!doctype html><html lang='en' data-bs-theme='auto'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>{html.escape(title)}</title><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'><link href='/static/web.css' rel='stylesheet'></head><body>{nav}<main class='container-fluid py-3'>{body}</main><script src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js'></script><script src='/static/web.js'></script></body></html>""")
+    csrf_meta = html.escape(str(request.session.get("csrf_token", "")))
+    nav = ""
+    if not public:
+        links = "".join(
+            f"<a class='nav-link' href='{href}'>{label}</a>"
+            for href, label in [
+                ("/chat", "Chat"),
+                ("/tasks", "Tasks"),
+                ("/files", "Files"),
+                ("/memory", "Memory"),
+                ("/models", "Models"),
+                ("/settings", "Settings"),
+                ("/web", "Web"),
+                ("/shell", "Shell"),
+                ("/ingest", "Ingest"),
+            ]
+        )
+        nav = f"""
+        <nav class='navbar navbar-expand-lg border-bottom sticky-top bg-body'>
+          <div class='container-fluid'>
+            <a class='navbar-brand' href='/'>Exec Agent</a>
+            <button class='navbar-toggler' data-bs-toggle='collapse' data-bs-target='#nav'><span class='navbar-toggler-icon'></span></button>
+            <div id='nav' class='collapse navbar-collapse'>
+              <div class='navbar-nav'>{links}</div>
+              <div class='ms-auto d-flex gap-2'>
+                <button class='btn btn-outline-secondary btn-sm' onclick='toggleTheme()'>Dark mode</button>
+                <form method='post' action='/logout' class='m-0'>{_csrf_input(request)}<button class='btn btn-outline-danger btn-sm'>Logout</button></form>
+              </div>
+            </div>
+          </div>
+        </nav>"""
+    return HTMLResponse(f"""<!doctype html><html lang='en' data-bs-theme='auto'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>{html.escape(title)}</title><meta name='csrf-token' content='{csrf_meta}'><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'><link href='/static/web.css' rel='stylesheet'></head><body>{nav}<main class='container-fluid py-3'>{body}</main><script src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js'></script><script src='/static/web.js'></script></body></html>""")
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -266,8 +407,9 @@ def _quick_links() -> str:
     return "".join(f"<a class='btn btn-primary' href='{h}'>{l}</a>" for h,l in [('/chat','Start chat'),('/tasks','Run task'),('/files','Browse files'),('/memory','Search memory'),('/web','FastCRW search'),('/shell','Shell')])
 
 
-def _login_form() -> str:
-    return """<div class='row justify-content-center'><div class='col-sm-10 col-md-6 col-lg-4'><div class='card mt-5'><div class='card-body'><h1 class='h3'>Login</h1><form method='post'><label class='form-label'>Web password</label><input name='password' type='password' class='form-control' autofocus><button class='btn btn-primary w-100 mt-3'>Login</button><p class='text-body-secondary mt-3'>Set EXEC_AGENT_WEB_PASSWORD to require authentication. With no password configured, submit once to continue.</p></form></div></div></div></div>"""
+def _login_form(request: Request) -> str:
+    error = "<div class='alert alert-danger'>Invalid password.</div>" if request.query_params.get("error") else ""
+    return f"""<div class='row justify-content-center'><div class='col-sm-10 col-md-6 col-lg-4'><div class='card mt-5'><div class='card-body'><h1 class='h3'>Login</h1>{error}<form method='post'>{_csrf_input(request)}<label class='form-label'>Web password</label><input name='password' type='password' class='form-control' autofocus><button class='btn btn-primary w-100 mt-3'>Login</button><p class='text-body-secondary mt-3'>Run <code>exec-agent web set-password</code> to configure an Argon2 password hash. Plaintext passwords are never stored.</p></form></div></div></div></div>"""
 
 
 def _chat_ui() -> str:
@@ -282,24 +424,24 @@ def _task_row(task: Any) -> str:
     return f"<tr><td><a href='/tasks/{task.task_id}'>{task.task_id}</a></td><td>{html.escape(task.description)}</td><td>{task.autonomy_level}</td><td>{task.status}</td><td>{task.updated_at}</td></tr>"
 
 
-def _tasks_ui(rows: str) -> str:
-    return f"""<h1>Autonomous tasks</h1><form method='post' class='card card-body mb-3'><label class='form-label'>Goal</label><textarea name='description' class='form-control' required></textarea><label class='form-label mt-2'>Autonomy</label><select name='autonomy_level' class='form-select'><option>human_approved</option><option>suggest_only</option><option>autonomous_limited</option><option>autonomous_full</option></select><button class='btn btn-primary mt-3'>Run task</button></form><table class='table table-responsive'><thead><tr><th>ID</th><th>Description</th><th>Autonomy</th><th>Status</th><th>Updated</th></tr></thead><tbody>{rows}</tbody></table>"""
+def _tasks_ui(rows: str, request: Request) -> str:
+    return f"""<h1>Autonomous tasks</h1><form method='post' class='card card-body mb-3'>{_csrf_input(request)}<label class='form-label'>Goal</label><textarea name='description' class='form-control' required></textarea><label class='form-label mt-2'>Autonomy</label><select name='autonomy_level' class='form-select'><option>human_approved</option><option>suggest_only</option><option>autonomous_limited</option><option>autonomous_full</option></select><button class='btn btn-primary mt-3'>Run task</button></form><table class='table table-responsive'><thead><tr><th>ID</th><th>Description</th><th>Autonomy</th><th>Status</th><th>Updated</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 
 def _approval_card(key: str, data: dict[str, Any]) -> str:
     return f"<div class='card mb-2'><div class='card-body'><strong>{html.escape(key)}</strong><pre>{html.escape(json.dumps(data, indent=2))}</pre><button class='btn btn-success' onclick=decideApproval('{key}','approve')>Approve</button> <button class='btn btn-danger' onclick=decideApproval('{key}','reject')>Reject</button></div></div>"
 
 
-def _files_ui(path: str, listing: str) -> str:
-    return f"""<h1>Files</h1><form class='input-group mb-3'><input name='path' value='{html.escape(path)}' class='form-control'><button class='btn btn-outline-primary'>Browse allowed directory</button></form><ul class='list-group mb-3'>{listing}</ul><form action='/files/upload' method='post' enctype='multipart/form-data' class='card card-body'><label class='form-label'>Upload PDF/DOCX/image/text</label><input type='file' name='upload' class='form-control'><button class='btn btn-primary mt-3'>Upload</button></form>"""
+def _files_ui(path: str, listing: str, request: Request) -> str:
+    return f"""<h1>Files</h1><form class='input-group mb-3'><input name='path' value='{html.escape(path)}' class='form-control'><button class='btn btn-outline-primary'>Browse allowed directory</button></form><ul class='list-group mb-3'>{listing}</ul><form action='/files/upload' method='post' enctype='multipart/form-data' class='card card-body'>{_csrf_input(request)}<label class='form-label'>Upload PDF/DOCX/image/text</label><input type='file' name='upload' class='form-control'><button class='btn btn-primary mt-3'>Upload</button></form>"""
 
 
-def _ingest_ui(path: str) -> str:
-    return f"""<h1>Ingest files into vector DB</h1><form method='post' class='card card-body'><label class='form-label'>File path</label><input name='path' value='{html.escape(path)}' class='form-control'><button class='btn btn-primary mt-3'>Ingest</button></form>"""
+def _ingest_ui(path: str, request: Request) -> str:
+    return f"""<h1>Ingest files into vector DB</h1><form method='post' class='card card-body'>{_csrf_input(request)}<label class='form-label'>File path</label><input name='path' value='{html.escape(path)}' class='form-control'><button class='btn btn-primary mt-3'>Ingest</button></form>"""
 
 
-def _memory_ui(q: str, rows: str) -> str:
-    return f"""<h1>Memory</h1><form class='input-group mb-3'><input name='q' value='{html.escape(q)}' class='form-control' placeholder='Search memory'><button class='btn btn-outline-primary'>Search</button></form><form method='post' class='card card-body mb-3'><textarea name='content' class='form-control' placeholder='New long-term memory'></textarea><input name='tags' class='form-control mt-2' placeholder='tags, comma-separated'><button class='btn btn-primary mt-2'>Add memory</button></form><table class='table'><thead><tr><th>ID</th><th>Content</th><th>Tags</th><th>Source</th></tr></thead><tbody>{rows}</tbody></table>"""
+def _memory_ui(q: str, rows: str, request: Request) -> str:
+    return f"""<h1>Memory</h1><form class='input-group mb-3'><input name='q' value='{html.escape(q)}' class='form-control' placeholder='Search memory'><button class='btn btn-outline-primary'>Search</button></form><form method='post' class='card card-body mb-3'>{_csrf_input(request)}<textarea name='content' class='form-control' placeholder='New long-term memory'></textarea><input name='tags' class='form-control mt-2' placeholder='tags, comma-separated'><button class='btn btn-primary mt-2'>Add memory</button></form><table class='table'><thead><tr><th>ID</th><th>Content</th><th>Tags</th><th>Source</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 
 def _web_ui(q: str, results: str) -> str:
@@ -311,8 +453,8 @@ def _web_ui(q: str, results: str) -> str:
     return f"<h1>FastCRW web search {status}</h1><form class='input-group mb-3'><input name='q' value='{html.escape(q)}' class='form-control' placeholder='Search the web'><button class='btn btn-primary'>Search</button></form><ul class='list-group'>{results}</ul>"
 
 
-def _shell_ui(output: str, rows: str) -> str:
-    return f"""<h1>Allowed shell commands</h1><form method='post' class='card card-body mb-3'><input name='command' class='form-control font-monospace' placeholder='python --version'><input name='cwd' class='form-control mt-2' placeholder='Working directory (inside shell workspace)'><button class='btn btn-primary mt-2'>Run</button></form>{output}<h2>Command history</h2><table class='table table-sm'><tbody>{rows}</tbody></table>"""
+def _shell_ui(output: str, rows: str, request: Request) -> str:
+    return f"""<h1>Allowed shell commands</h1><form method='post' class='card card-body mb-3'>{_csrf_input(request)}<input name='command' class='form-control font-monospace' placeholder='python --version'><input name='cwd' class='form-control mt-2' placeholder='Working directory (inside shell workspace)'><button class='btn btn-primary mt-2'>Run</button></form>{output}<h2>Command history</h2><table class='table table-sm'><tbody>{rows}</tbody></table>"""
 
 
 def _history_rows() -> str:

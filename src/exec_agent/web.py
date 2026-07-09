@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from argon2 import PasswordHasher
@@ -136,11 +136,11 @@ def create_app() -> FastAPI:
     @app.get("/tasks", response_class=HTMLResponse)
     async def tasks(request: Request) -> HTMLResponse:
         _require_login(request)
-        rows = "".join(_task_row(t) for t in TaskStore().list(50))
+        rows = "".join(_task_row(t, request) for t in TaskStore().list(50))
         return _page("Tasks", _tasks_ui(rows, request), request)
 
     @app.post("/tasks")
-    async def create_task(background: BackgroundTasks, request: Request, description: str = Form(...), autonomy_level: str = Form("human_approved")) -> RedirectResponse:
+    async def create_task(background: BackgroundTasks, request: Request, description: str = Form(...), autonomy_level: str = Form("off")) -> RedirectResponse:
         _require_login(request)
         queue: asyncio.Queue[str] = asyncio.Queue()
         created: dict[str, str] = {}
@@ -164,7 +164,10 @@ def create_app() -> FastAPI:
             raise HTTPException(404)
         steps = "".join(f"<li class='list-group-item'><strong>{s.phase}</strong>: {html.escape(s.action)}<pre>{html.escape(s.result or s.error)}</pre></li>" for s in TaskStore().steps(task_id))
         approvals = "".join(_approval_card(k, v) for k, v in PENDING_APPROVALS.items()) or '<p class="text-body-secondary">No pending approvals.</p>'
-        return _page("Task detail", f"<h1>Task {task.task_id}</h1>{_task_card(task)}<h2>Progress</h2><ul id='task-log' class='list-group mb-3'>{steps}</ul><script>streamTask('{task.task_id}')</script><h2>HITL approvals</h2>{approvals}", request)
+        stop = f"<form method='post' action='/tasks/{task.task_id}/stop' class='d-inline'>{_csrf_input(request)}<button class='btn btn-danger'>Emergency stop</button></form>" if task.status == "running" else ""
+        report = f"<a class='btn btn-outline-secondary' href='/tasks/{task.task_id}/report'>Export task report</a>"
+        safety = _task_start_preview(_task_start_summary(task.description, task.autonomy_level))
+        return _page("Task detail", f"<h1>Task {task.task_id}</h1><div class='d-flex gap-2 mb-3'>{stop}{report}</div>{_task_card(task)}<div class='card card-body mb-3'>{safety}</div><h2>Progress</h2><ul id='task-log' class='list-group mb-3'>{steps}</ul><script>streamTask('{task.task_id}')</script><h2>HITL approvals</h2>{approvals}", request)
 
     @app.get("/api/tasks/{task_id}/events")
     async def task_events(request: Request, task_id: str) -> StreamingResponse:
@@ -175,10 +178,48 @@ def create_app() -> FastAPI:
                 yield _sse("progress", {"message": await queue.get()})
         return StreamingResponse(events(), media_type="text/event-stream")
 
+
+    @app.post("/tasks/{task_id}/stop")
+    async def stop_task(request: Request, task_id: str) -> RedirectResponse:
+        _require_login(request)
+        if not TaskStore().cancel(task_id):
+            raise HTTPException(404)
+        queue = TASK_EVENTS.setdefault(task_id, asyncio.Queue())
+        queue.put_nowait("Emergency stop requested by user.")
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    @app.get("/tasks/{task_id}/report")
+    async def task_report(request: Request, task_id: str) -> JSONResponse:
+        _require_login(request)
+        task = TaskStore().get(task_id)
+        if not task:
+            raise HTTPException(404)
+        steps = TaskStore().steps(task_id)
+        settings = get_settings()
+        payload = {
+            "task": task.__dict__,
+            "safety": _task_start_summary(task.description, task.autonomy_level),
+            "steps": [step.__dict__ for step in steps],
+            "report_generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "model_profile": _model_profile(settings),
+        }
+        return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="task-{task_id}-report.json"'})
+
+    @app.get("/audit", response_class=HTMLResponse)
+    async def audit_log(request: Request) -> HTMLResponse:
+        _require_login(request)
+        store = TaskStore()
+        rows = []
+        for task in store.list(100):
+            rows.append(_audit_task_row(task))
+            rows.extend(_audit_step_row(task, step) for step in store.steps(task.task_id))
+        body = "".join(rows) or "<tr><td colspan='6' class='text-body-secondary'>No audit events yet.</td></tr>"
+        return _page("Audit log", _audit_ui(body), request)
+
     @app.post("/api/approvals/{approval_id}/{decision}")
     async def approval(request: Request, approval_id: str, decision: str) -> dict[str, str]:
         _require_login(request)
-        if decision not in {"approve", "reject"}:
+        if decision not in {"approve", "reject", "edit"}:
             raise HTTPException(400)
         PENDING_APPROVALS.pop(approval_id, None)
         return {"status": decision}
@@ -373,6 +414,7 @@ def _page(title: str, body: str, request: Request, *, public: bool = False) -> H
             for href, label in [
                 ("/chat", "Chat"),
                 ("/tasks", "Tasks"),
+                ("/audit", "Audit log"),
                 ("/files", "Files"),
                 ("/memory", "Memory"),
                 ("/models", "Models"),
@@ -417,20 +459,111 @@ def _chat_ui() -> str:
 
 
 def _task_card(task: Any) -> str:
-    return f"<div class='mb-2'><a href='/tasks/{task.task_id}'><strong>{task.task_id}</strong></a> <span class='badge text-bg-secondary'>{task.status}</span><br><span>{html.escape(task.description)}</span></div>"
+    status_class = "text-bg-success" if task.status == "completed" else "text-bg-danger" if task.status in {"failed", "cancelled"} else "text-bg-warning" if task.status == "blocked" else "text-bg-secondary"
+    return f"<div class='mb-2'><a href='/tasks/{task.task_id}'><strong>{task.task_id}</strong></a> <span class='badge {status_class}'>{task.status}</span><br><span>{html.escape(task.description)}</span></div>"
 
 
-def _task_row(task: Any) -> str:
-    return f"<tr><td><a href='/tasks/{task.task_id}'>{task.task_id}</a></td><td>{html.escape(task.description)}</td><td>{task.autonomy_level}</td><td>{task.status}</td><td>{task.updated_at}</td></tr>"
+def _task_row(task: Any, request: Request) -> str:
+    actions = f"<a class='btn btn-sm btn-outline-secondary' href='/tasks/{task.task_id}/report'>Export report</a>"
+    if task.status == "running":
+        actions = f"<form method='post' action='/tasks/{task.task_id}/stop' class='d-inline'>{_csrf_input(request)}<button class='btn btn-sm btn-danger'>Emergency stop</button></form> " + actions
+    return f"<tr><td><a href='/tasks/{task.task_id}'>{task.task_id}</a></td><td>{html.escape(task.description)}</td><td>{_autonomy_label(task.autonomy_level)}</td><td>{task.status}</td><td>{task.updated_at}</td><td>{actions}</td></tr>"
 
 
 def _tasks_ui(rows: str, request: Request) -> str:
-    return f"""<h1>Autonomous tasks</h1><form method='post' class='card card-body mb-3'>{_csrf_input(request)}<label class='form-label'>Goal</label><textarea name='description' class='form-control' required></textarea><label class='form-label mt-2'>Autonomy</label><select name='autonomy_level' class='form-select'><option>human_approved</option><option>suggest_only</option><option>autonomous_limited</option><option>autonomous_full</option></select><button class='btn btn-primary mt-3'>Run task</button></form><table class='table table-responsive'><thead><tr><th>ID</th><th>Description</th><th>Autonomy</th><th>Status</th><th>Updated</th></tr></thead><tbody>{rows}</tbody></table>"""
+    settings = get_settings()
+    controls = _safety_controls_panel(settings)
+    options = "".join(f"<option value='{value}' {'selected' if value == settings.autonomy_level else ''}>{label}</option>" for value, label in _autonomy_options())
+    summary = _task_start_summary("", settings.autonomy_level)
+    return f"""<h1>Autonomous tasks</h1>{controls}<form method='post' class='card card-body mb-3' oninput='updateTaskPreview()'>{_csrf_input(request)}<label class='form-label'>Task goal</label><textarea id='task-goal' name='description' class='form-control' required></textarea><label class='form-label mt-2'>Autonomy level</label><select id='autonomy-level' name='autonomy_level' class='form-select'>{options}</select><div id='task-preview' class='alert alert-info mt-3'>{_task_start_preview(summary)}</div><button class='btn btn-primary mt-2'>Run task</button></form><h2>Task history</h2><table class='table table-responsive'><thead><tr><th>ID</th><th>Description</th><th>Autonomy</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 
 def _approval_card(key: str, data: dict[str, Any]) -> str:
-    return f"<div class='card mb-2'><div class='card-body'><strong>{html.escape(key)}</strong><pre>{html.escape(json.dumps(data, indent=2))}</pre><button class='btn btn-success' onclick=decideApproval('{key}','approve')>Approve</button> <button class='btn btn-danger' onclick=decideApproval('{key}','reject')>Reject</button></div></div>"
+    proposed = html.escape(str(data.get("proposed_action", data.get("action", key))))
+    reason = html.escape(str(data.get("reason", "Human approval is required before this side effect.")))
+    affected = html.escape(json.dumps(data.get("affected_files_commands", data.get("payload", data)), indent=2))
+    risk = html.escape(str(data.get("risk_level", "medium")))
+    return f"""<div class='card mb-2 approval-card'><div class='card-body'><div class='d-flex justify-content-between'><strong>{proposed}</strong><span class='badge text-bg-warning'>Risk: {risk}</span></div><p><strong>Reason:</strong> {reason}</p><p><strong>Affected files/commands:</strong></p><pre>{affected}</pre><button class='btn btn-success' onclick=decideApproval('{key}','approve')>Approve</button> <button class='btn btn-outline-primary' onclick=editApproval('{key}')>Edit</button> <button class='btn btn-danger' onclick=decideApproval('{key}','reject')>Reject</button></div></div>"""
 
+
+
+def _autonomy_options() -> list[tuple[str, str]]:
+    return [
+        ("off", "off"),
+        ("suggest_only", "suggest only"),
+        ("human_approved", "require approval"),
+        ("autonomous_limited", "autonomous limited"),
+        ("autonomous_full", "autonomous full"),
+    ]
+
+
+def _autonomy_label(value: str) -> str:
+    return dict(_autonomy_options()).get(value, value)
+
+
+def _csv_items(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _model_profile(settings: Any) -> dict[str, Any]:
+    return {
+        "runtime_profile": settings.runtime_profile,
+        "model_preset": settings.model_preset,
+        "primary_model": settings.model_id,
+        "device": settings.device,
+        "general_model": settings.general_model_id,
+        "coding_model": settings.coding_model_id,
+        "research_model": settings.research_model_id,
+        "tool_model": settings.tool_model_id,
+    }
+
+
+def _allowed_tools(settings: Any) -> list[str]:
+    tools = ["planner", "reflect", "filesystem"]
+    if settings.shell_enabled:
+        tools.append("shell")
+    if settings.web_enabled and settings.fastcrw_enabled:
+        tools.append("web_fastcrw")
+    return tools
+
+
+def _task_start_summary(goal: str, autonomy_level: str) -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "task_goal": goal or "Enter a goal before starting.",
+        "autonomy_level": _autonomy_label(autonomy_level),
+        "max_steps": settings.max_autonomous_steps,
+        "allowed_tools": _allowed_tools(settings),
+        "allowed_directories": _csv_items(settings.allowed_dirs),
+    }
+
+
+def _task_start_preview(summary: dict[str, Any]) -> str:
+    tools = "".join(f"<span class='badge text-bg-secondary me-1'>{html.escape(tool)}</span>" for tool in summary["allowed_tools"])
+    dirs = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in summary["allowed_directories"])
+    return f"""<h2 class='h5'>Before this autonomous task begins</h2><dl class='row mb-2'><dt class='col-sm-3'>Task goal</dt><dd class='col-sm-9' data-preview='goal'>{html.escape(str(summary['task_goal']))}</dd><dt class='col-sm-3'>Autonomy level</dt><dd class='col-sm-9' data-preview='autonomy'>{html.escape(str(summary['autonomy_level']))}</dd><dt class='col-sm-3'>Max steps</dt><dd class='col-sm-9'>{summary['max_steps']}</dd><dt class='col-sm-3'>Allowed tools</dt><dd class='col-sm-9'>{tools}</dd><dt class='col-sm-3'>Allowed directories</dt><dd class='col-sm-9'><ul class='mb-0'>{dirs}</ul></dd></dl>"""
+
+
+def _safety_controls_panel(settings: Any) -> str:
+    allowed_dirs = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in _csv_items(settings.allowed_dirs))
+    allowlist = "".join(f"<span class='badge text-bg-success me-1 mb-1'>{html.escape(cmd)}</span>" for cmd in _csv_items(settings.shell_allowlist))
+    denylist = "".join(f"<span class='badge text-bg-danger me-1 mb-1'>{html.escape(cmd)}</span>" for cmd in _csv_items(settings.shell_denylist))
+    model = _model_profile(settings)
+    model_rows = "".join(f"<tr><th>{html.escape(k.replace('_', ' ').title())}</th><td><code>{html.escape(str(v))}</code></td></tr>" for k, v in model.items())
+    return f"""<div class='row g-3 mb-3'><div class='col-lg-4'><div class='card h-100'><div class='card-header'>Active allowed directories</div><div class='card-body'><ul class='mb-0'>{allowed_dirs}</ul></div></div></div><div class='col-lg-4'><div class='card h-100'><div class='card-header'>Shell allowlist / denylist</div><div class='card-body'><h2 class='h6'>Allowlist</h2>{allowlist}<h2 class='h6 mt-3'>Denylist</h2>{denylist}</div></div></div><div class='col-lg-4'><div class='card h-100'><div class='card-header'>Current model profile</div><div class='card-body p-0'><table class='table table-sm mb-0'>{model_rows}</table></div></div></div></div>"""
+
+
+def _audit_task_row(task: Any) -> str:
+    return f"<tr><td>{html.escape(task.updated_at)}</td><td>task</td><td><a href='/tasks/{task.task_id}'>{task.task_id}</a></td><td>{html.escape(task.status)}</td><td>{html.escape(task.autonomy_level)}</td><td>{html.escape(task.description)}</td></tr>"
+
+
+def _audit_step_row(task: Any, step: Any) -> str:
+    detail = step.error or step.result
+    return f"<tr><td>{html.escape(step.created_at)}</td><td>step</td><td><a href='/tasks/{task.task_id}'>{task.task_id}</a></td><td>{html.escape(step.phase)}</td><td>{html.escape(step.tool_name)}</td><td>{html.escape(step.action)}<pre>{html.escape(detail[:1000])}</pre></td></tr>"
+
+
+def _audit_ui(rows: str) -> str:
+    return f"""<h1>Audit log</h1><p class='text-body-secondary'>Chronological record of autonomous tasks, steps, decisions, and tool outputs persisted by the task store.</p><table class='table table-sm table-responsive'><thead><tr><th>Time</th><th>Type</th><th>Task</th><th>Status/phase</th><th>Autonomy/tool</th><th>Details</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 def _files_ui(path: str, listing: str, request: Request) -> str:
     return f"""<h1>Files</h1><form class='input-group mb-3'><input name='path' value='{html.escape(path)}' class='form-control'><button class='btn btn-outline-primary'>Browse allowed directory</button></form><ul class='list-group mb-3'>{listing}</ul><form action='/files/upload' method='post' enctype='multipart/form-data' class='card card-body'>{_csrf_input(request)}<label class='form-label'>Upload PDF/DOCX/image/text</label><input type='file' name='upload' class='form-control'><button class='btn btn-primary mt-3'>Upload</button></form>"""
